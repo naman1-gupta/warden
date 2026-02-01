@@ -610,6 +610,7 @@ async function run(): Promise<void> {
           ? renderSkillReport(report, {
               maxFindings: trigger.output.maxFindings ?? inputs.maxFindings,
               commentOn,
+              failOn,
               checkRunUrl: skillCheckUrl,
               totalFindings: report.findings.length,
             })
@@ -737,8 +738,11 @@ async function run(): Promise<void> {
                     {
                       maxFindings: result.maxFindings,
                       commentOn: result.commentOn,
+                      failOn: result.failOn,
                       checkRunUrl: result.checkRunUrl,
                       totalFindings: result.report.findings.length,
+                      // Pass original findings for failOn evaluation (not affected by dedup)
+                      allFindings: result.report.findings,
                     }
                   )
                 : result.renderResult;
