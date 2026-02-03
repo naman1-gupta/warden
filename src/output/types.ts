@@ -1,5 +1,8 @@
 import type { SeverityThreshold, Finding } from '../types/index.js';
 
+/** GitHub PR review states that Warden tracks */
+export type ReviewState = 'CHANGES_REQUESTED' | 'APPROVED' | 'COMMENTED';
+
 export interface GitHubComment {
   body: string;
   path?: string;
@@ -38,4 +41,9 @@ export interface RenderOptions {
    * modified (e.g., for deduplication) but failOn should evaluate against all findings.
    */
   allFindings?: Finding[];
+  /**
+   * Previous Warden review state on this PR. When set to 'CHANGES_REQUESTED' and
+   * current run has no blocking findings, the review will be APPROVE to clear the block.
+   */
+  previousReviewState?: ReviewState | null;
 }
