@@ -1,4 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk';
+import { customAlphabet } from 'nanoid';
 import { FindingSchema } from '../types/index.js';
 import type { Finding } from '../types/index.js';
 
@@ -224,8 +225,24 @@ ${truncatedText}`,
   }
 }
 
+/** Unambiguous uppercase alphanumeric alphabet (no O/0, I/1). */
+const SHORT_ID_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+
+/** Length of each generated short ID (before formatting). */
+export const SHORT_ID_LENGTH = 6;
+
+/**
+ * Generate a short human-readable ID for a finding.
+ * Format: XXX-XXX (e.g., K7M-X9P)
+ */
+export function generateShortId(): string {
+  const raw = customAlphabet(SHORT_ID_ALPHABET, SHORT_ID_LENGTH)();
+  return `${raw.slice(0, 3)}-${raw.slice(3)}`;
+}
+
 /**
  * Validate and normalize findings from extracted JSON.
+ * Replaces the LLM-provided ID with a short nanoid for stable cross-referencing.
  */
 export function validateFindings(findings: unknown[], filename: string): Finding[] {
   const validated: Finding[] = [];
@@ -243,6 +260,7 @@ export function validateFindings(findings: unknown[], filename: string): Finding
     if (result.success) {
       validated.push({
         ...result.data,
+        id: generateShortId(),
         location: result.data.location ? { ...result.data.location, path: filename } : undefined,
       });
     }
@@ -252,12 +270,12 @@ export function validateFindings(findings: unknown[], filename: string): Finding
 }
 
 /**
- * Deduplicate findings by id and location.
+ * Deduplicate findings by title and location.
  */
 export function deduplicateFindings(findings: Finding[]): Finding[] {
   const seen = new Set<string>();
   return findings.filter((f) => {
-    const key = `${f.id}:${f.location?.path}:${f.location?.startLine}`;
+    const key = `${f.title}:${f.location?.path}:${f.location?.startLine}`;
     if (seen.has(key)) return false;
     seen.add(key);
     return true;

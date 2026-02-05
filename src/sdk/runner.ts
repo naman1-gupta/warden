@@ -34,6 +34,8 @@ export {
   extractFindingsWithLLM,
   truncateForLLMFallback,
   deduplicateFindings,
+  validateFindings,
+  generateShortId,
 } from './extract.js';
 export type { ExtractFindingsResult } from './extract.js';
 
