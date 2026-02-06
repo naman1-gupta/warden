@@ -21,7 +21,36 @@ import figures from 'figures';
 import { Verbosity } from './verbosity.js';
 import type { OutputMode } from './tty.js';
 import { ICON_CHECK, ICON_SKIPPED } from './icons.js';
-import { formatDuration } from './formatters.js';
+import { timestamp } from './tty.js';
+import { formatDuration, formatLocation, formatSeverityPlain, formatFindingCountsPlain, countBySeverity, pluralize } from './formatters.js';
+
+/**
+ * Write a log-mode message to stderr with timestamp prefix.
+ * Used for non-TTY / plain output.
+ */
+function logPlain(message: string): void {
+  console.error(`[${timestamp()}] warden: ${message}`);
+}
+
+/**
+ * Write a debug-level message to stderr.
+ * Uses chalk.dim formatting in TTY mode, timestamped "DEBUG:" prefix otherwise.
+ */
+function debugLog(mode: OutputMode, message: string): void {
+  if (mode.isTTY) {
+    console.error(chalk.dim(`[debug] ${message}`));
+  } else {
+    logPlain(`DEBUG: ${message}`);
+  }
+}
+
+/**
+ * Format a finding's location as a compact string, falling back to 'unknown'.
+ */
+function findingLocation(finding: Finding): string {
+  if (!finding.location) return 'unknown';
+  return formatLocation(finding.location.path, finding.location.startLine, finding.location.endLine);
+}
 
 /**
  * State of a file being processed by a skill.
@@ -90,6 +119,8 @@ export interface SkillProgressCallbacks {
   onSkillStart: (skill: SkillState) => void;
   onSkillUpdate: (name: string, updates: Partial<SkillState>) => void;
   onFileUpdate: (skillName: string, filename: string, updates: Partial<FileState>) => void;
+  /** Called when a hunk analysis starts (one SDK invocation per hunk) */
+  onHunkStart?: (skillName: string, filename: string, hunkNum: number, totalHunks: number, lineRange: string) => void;
   onSkillComplete: (name: string, report: SkillReport) => void;
   onSkillSkipped: (name: string) => void;
   onSkillError: (name: string, error: string) => void;
@@ -97,6 +128,8 @@ export interface SkillProgressCallbacks {
   onLargePrompt?: (skillName: string, filename: string, lineRange: string, chars: number, estimatedTokens: number) => void;
   /** Called with prompt size info in debug mode */
   onPromptSize?: (skillName: string, filename: string, lineRange: string, systemChars: number, userChars: number, totalChars: number, estimatedTokens: number) => void;
+  /** Called with extraction result details (debug mode) */
+  onExtractionResult?: (skillName: string, filename: string, lineRange: string, findingsCount: number, method: 'regex' | 'llm' | 'none') => void;
 }
 
 /**
@@ -172,11 +205,12 @@ export async function runSkillTask(
 
       const fileCallbacks: FileAnalysisCallbacks = {
         skillStartTime: startTime,
-        onHunkStart: (hunkNum, totalHunks) => {
+        onHunkStart: (hunkNum, totalHunks, lineRange) => {
           callbacks.onFileUpdate(name, filename, {
             currentHunk: hunkNum,
             totalHunks,
           });
+          callbacks.onHunkStart?.(name, filename, hunkNum, totalHunks, lineRange);
         },
         onHunkComplete: (_hunkNum, findings) => {
           // Accumulate findings for this file
@@ -193,6 +227,11 @@ export async function runSkillTask(
         onPromptSize: callbacks.onPromptSize
           ? (lineRange, systemChars, userChars, totalChars, estimatedTokens) => {
               callbacks.onPromptSize?.(name, filename, lineRange, systemChars, userChars, totalChars, estimatedTokens);
+            }
+          : undefined,
+        onExtractionResult: callbacks.onExtractionResult
+          ? (lineRange, findingsCount, method) => {
+              callbacks.onExtractionResult?.(name, filename, lineRange, findingsCount, method);
             }
           : undefined,
       };
@@ -269,6 +308,113 @@ export async function runSkillTask(
 }
 
 /**
+ * Create default progress callbacks for console output.
+ * In TTY mode: colored icons, chalk formatting.
+ * In non-TTY/log mode: timestamped lines with finding details.
+ */
+export function createDefaultCallbacks(
+  tasks: SkillTaskOptions[],
+  mode: OutputMode,
+  verbosity: Verbosity
+): SkillProgressCallbacks {
+  /** Resolve the display name for a skill, falling back to the raw name. */
+  function displayNameFor(name: string): string {
+    return tasks.find((t) => t.name === name)?.displayName ?? name;
+  }
+
+  return {
+    onSkillStart: (skill) => {
+      if (verbosity === Verbosity.Quiet) return;
+      if (!mode.isTTY) {
+        const fileCount = skill.files.length;
+        logPlain(`Running ${displayNameFor(skill.name)} (${fileCount} ${pluralize(fileCount, 'file')})...`);
+      }
+    },
+    onSkillUpdate: () => { /* no-op for default callbacks */ },
+    onFileUpdate: () => { /* no-op for default callbacks */ },
+    onHunkStart: (skillName, filename, hunkNum, totalHunks, lineRange) => {
+      if (verbosity === Verbosity.Quiet || mode.isTTY) return;
+      logPlain(`  ${displayNameFor(skillName)} > ${filename} [${hunkNum}/${totalHunks}] ${lineRange}`);
+    },
+    onSkillComplete: (name, report) => {
+      if (verbosity === Verbosity.Quiet) return;
+      const displayName = displayNameFor(name);
+
+      if (mode.isTTY) {
+        const duration = report.durationMs !== undefined ? ` ${chalk.dim(`[${formatDuration(report.durationMs)}]`)}` : '';
+        console.error(`${chalk.green(ICON_CHECK)} ${displayName}${duration}`);
+
+        // Debug: log finding details
+        if (verbosity >= Verbosity.Debug && report.findings.length > 0) {
+          for (const finding of report.findings) {
+            debugLog(mode, `${formatSeverityPlain(finding.severity)} ${findingLocation(finding)}: ${finding.title}`);
+            if (finding.suggestedFix) {
+              debugLog(mode, `  fix: ${finding.suggestedFix.description}`);
+            }
+          }
+        }
+      } else {
+        // Log mode: timestamped completion with duration and finding summary
+        const duration = report.durationMs !== undefined ? formatDuration(report.durationMs) : '?';
+        const counts = countBySeverity(report.findings);
+        const summary = formatFindingCountsPlain(counts);
+        logPlain(`${displayName} completed in ${duration} - ${summary}`);
+
+        // Show per-finding lines at Normal+ verbosity in log mode
+        for (const finding of report.findings) {
+          logPlain(`  ${formatSeverityPlain(finding.severity)} ${findingLocation(finding)}: ${finding.title}`);
+          if (verbosity >= Verbosity.Debug && finding.suggestedFix) {
+            logPlain(`    fix: ${finding.suggestedFix.description}`);
+          }
+        }
+      }
+    },
+    onSkillSkipped: (name) => {
+      if (verbosity === Verbosity.Quiet) return;
+      const displayName = displayNameFor(name);
+      if (mode.isTTY) {
+        console.error(`${chalk.yellow(ICON_SKIPPED)} ${displayName} ${chalk.dim('[skipped]')}`);
+      } else {
+        logPlain(`${displayName} skipped`);
+      }
+    },
+    onSkillError: (name, error) => {
+      if (verbosity === Verbosity.Quiet) return;
+      const displayName = displayNameFor(name);
+      if (mode.isTTY) {
+        console.error(`${chalk.red('\u2717')} ${displayName} - ${chalk.red(error)}`);
+      } else {
+        logPlain(`ERROR: ${displayName} - ${error}`);
+      }
+    },
+    // Warn about large prompts (always shown unless quiet)
+    onLargePrompt: (_skillName, filename, lineRange, chars, estimatedTokens) => {
+      if (verbosity === Verbosity.Quiet) return;
+      const location = `${filename}:${lineRange}`;
+      const size = `${Math.round(chars / 1000)}k chars (~${Math.round(estimatedTokens / 1000)}k tokens)`;
+      if (mode.isTTY) {
+        console.error(`${chalk.yellow(figures.warning)}  Large prompt for ${location}: ${size}`);
+      } else {
+        logPlain(`WARN: Large prompt for ${location}: ${size}`);
+      }
+    },
+    // Debug mode: show prompt sizes
+    onPromptSize: verbosity >= Verbosity.Debug
+      ? (_skillName, filename, lineRange, systemChars, userChars, totalChars, estimatedTokens) => {
+          const location = `${filename}:${lineRange}`;
+          debugLog(mode, `Prompt for ${location}: system=${systemChars}, user=${userChars}, total=${totalChars} chars (~${estimatedTokens} tokens)`);
+        }
+      : undefined,
+    // Debug mode: show extraction results
+    onExtractionResult: verbosity >= Verbosity.Debug
+      ? (_skillName, filename, lineRange, findingsCount, method) => {
+          debugLog(mode, `Extracted ${findingsCount} ${pluralize(findingsCount, 'finding')} from ${filename}:${lineRange} via ${method}`);
+        }
+      : undefined,
+  };
+}
+
+/**
  * Run multiple skill tasks with optional concurrency.
  * Uses callbacks to report progress for Ink rendering.
  */
@@ -282,77 +428,11 @@ export async function runSkillTasks(
   // File-level concurrency (within each skill)
   const fileConcurrency = 5;
 
-  // Create default callbacks that output to console
-  const defaultCallbacks: SkillProgressCallbacks = {
-    onSkillStart: (_skill) => {
-      // We don't log start - we'll log completion with duration
-    },
-    onSkillUpdate: () => { /* no-op for default callbacks */ },
-    onFileUpdate: () => { /* no-op for default callbacks */ },
-    onSkillComplete: (name, report) => {
-      if (verbosity === Verbosity.Quiet) return;
-      const task = tasks.find((t) => t.name === name);
-      const displayName = task?.displayName ?? name;
-      const duration = report.durationMs ? ` ${chalk.dim(`[${formatDuration(report.durationMs)}]`)}` : '';
-      if (mode.isTTY) {
-        console.error(`${chalk.green(ICON_CHECK)} ${displayName}${duration}`);
-      } else {
-        console.log(`${ICON_CHECK} ${displayName}`);
-      }
-    },
-    onSkillSkipped: (name) => {
-      if (verbosity === Verbosity.Quiet) return;
-      const task = tasks.find((t) => t.name === name);
-      const displayName = task?.displayName ?? name;
-      if (mode.isTTY) {
-        console.error(`${chalk.yellow(ICON_SKIPPED)} ${displayName} ${chalk.dim('[skipped]')}`);
-      } else {
-        console.log(`${ICON_SKIPPED} ${displayName} [skipped]`);
-      }
-    },
-    onSkillError: (name, error) => {
-      if (verbosity === Verbosity.Quiet) return;
-      const task = tasks.find((t) => t.name === name);
-      const displayName = task?.displayName ?? name;
-      if (mode.isTTY) {
-        console.error(`${chalk.red('\u2717')} ${displayName} - ${chalk.red(error)}`);
-      } else {
-        console.error(`\u2717 ${displayName} - Error: ${error}`);
-      }
-    },
-    // Warn about large prompts (always shown unless quiet)
-    onLargePrompt: (skillName, filename, lineRange, chars, estimatedTokens) => {
-      if (verbosity === Verbosity.Quiet) return;
-      const location = `${filename}:${lineRange}`;
-      const size = `${Math.round(chars / 1000)}k chars (~${Math.round(estimatedTokens / 1000)}k tokens)`;
-      if (mode.isTTY) {
-        console.error(`${chalk.yellow(figures.warning)}  Large prompt for ${location}: ${size}`);
-      } else {
-        console.error(`WARN: Large prompt for ${location}: ${size}`);
-      }
-    },
-    // Debug mode: show prompt sizes
-    onPromptSize: verbosity >= Verbosity.Debug
-      ? (_skillName, filename, lineRange, systemChars, userChars, totalChars, estimatedTokens) => {
-          const location = `${filename}:${lineRange}`;
-          if (mode.isTTY) {
-            console.error(chalk.dim(`[debug] Prompt for ${location}: system=${systemChars}, user=${userChars}, total=${totalChars} chars (~${estimatedTokens} tokens)`));
-          } else {
-            console.error(`DEBUG: Prompt for ${location}: system=${systemChars}, user=${userChars}, total=${totalChars} chars (~${estimatedTokens} tokens)`);
-          }
-        }
-      : undefined,
-  };
+  const effectiveCallbacks = callbacks ?? createDefaultCallbacks(tasks, mode, verbosity);
 
-  const effectiveCallbacks = callbacks ?? defaultCallbacks;
-
-  // Output SKILLS header
-  if (verbosity !== Verbosity.Quiet && tasks.length > 0) {
-    if (mode.isTTY) {
-      console.error(chalk.bold('SKILLS'));
-    } else {
-      console.error('SKILLS');
-    }
+  // Output SKILLS header (TTY only - in log mode, "Running..." lines are sufficient)
+  if (verbosity !== Verbosity.Quiet && tasks.length > 0 && mode.isTTY) {
+    console.error(chalk.bold('SKILLS'));
   }
 
   const results: SkillTaskResult[] = [];
