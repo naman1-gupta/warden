@@ -4,12 +4,13 @@ import type { Finding, RetryConfig } from '../types/index.js';
 import type { HunkWithContext } from '../diff/index.js';
 import { SkillRunnerError, WardenAuthenticationError, isRetryableError, isAuthenticationError, isAuthenticationErrorMessage } from './errors.js';
 import { DEFAULT_RETRY_CONFIG, calculateRetryDelay, sleep } from './retry.js';
-import { extractUsage, aggregateUsage, emptyUsage, estimateTokens } from './usage.js';
+import { extractUsage, aggregateUsage, emptyUsage, estimateTokens, aggregateAuxiliaryUsage } from './usage.js';
 import { buildHunkSystemPrompt, buildHunkUserPrompt, type PRPromptContext } from './prompt.js';
 import { extractFindingsJson, extractFindingsWithLLM, validateFindings, deduplicateFindings } from './extract.js';
 import {
   LARGE_PROMPT_THRESHOLD_CHARS,
   DEFAULT_FILE_CONCURRENCY,
+  type AuxiliaryUsageEntry,
   type HunkAnalysisResult,
   type HunkAnalysisCallbacks,
   type SkillRunnerOptions,
@@ -31,6 +32,8 @@ interface ParseHunkOutputResult {
   extractionError?: string;
   /** Preview of the output that failed to parse */
   extractionPreview?: string;
+  /** Usage from LLM extraction fallback, if invoked */
+  extractionUsage?: UsageStats;
 }
 
 /**
@@ -60,7 +63,7 @@ async function parseHunkOutput(
   const fallback = await extractFindingsWithLLM(result.result, apiKey);
 
   if (fallback.success) {
-    return { findings: validateFindings(fallback.findings, filename), extractionFailed: false, extractionMethod: 'llm' };
+    return { findings: validateFindings(fallback.findings, filename), extractionFailed: false, extractionMethod: 'llm', extractionUsage: fallback.usage };
   }
 
   // Both tiers failed - return extraction failure info
@@ -70,6 +73,7 @@ async function parseHunkOutput(
     extractionMethod: 'none',
     extractionError: fallback.error,
     extractionPreview: fallback.preview,
+    extractionUsage: fallback.usage,
   };
 }
 
@@ -263,6 +267,9 @@ async function analyzeHunk(
         extractionFailed: parseResult.extractionFailed,
         extractionError: parseResult.extractionError,
         extractionPreview: parseResult.extractionPreview,
+        auxiliaryUsage: parseResult.extractionUsage
+          ? [{ agent: 'extraction', usage: parseResult.extractionUsage }]
+          : undefined,
       };
     } catch (error) {
       lastError = error;
@@ -360,6 +367,7 @@ export async function analyzeFile(
   const { abortController } = options;
   const fileFindings: Finding[] = [];
   const fileUsage: UsageStats[] = [];
+  const fileAuxiliaryUsage: AuxiliaryUsageEntry[] = [];
   let failedHunks = 0;
   let failedExtractions = 0;
 
@@ -394,6 +402,9 @@ export async function analyzeFile(
 
     fileFindings.push(...result.findings);
     fileUsage.push(result.usage);
+    if (result.auxiliaryUsage) {
+      fileAuxiliaryUsage.push(...result.auxiliaryUsage);
+    }
   }
 
   return {
@@ -402,6 +413,7 @@ export async function analyzeFile(
     usage: aggregateUsage(fileUsage),
     failedHunks,
     failedExtractions,
+    auxiliaryUsage: fileAuxiliaryUsage.length > 0 ? fileAuxiliaryUsage : undefined,
   };
 }
 
@@ -469,6 +481,7 @@ export async function runSkill(
 
   // Track all usage stats for aggregation
   const allUsage: UsageStats[] = [];
+  const allAuxiliaryUsage: AuxiliaryUsageEntry[] = [];
 
   // Track failed hunks across all files
   let totalFailedHunks = 0;
@@ -535,6 +548,17 @@ export async function runSkill(
     return result;
   }
 
+  /** Process a file with timing, returning a self-contained result. */
+  async function processFileWithTiming(fileHunkEntry: PreparedFile, fileIndex: number) {
+    const fileStart = Date.now();
+    const result = await processFile(fileHunkEntry, fileIndex);
+    const durationMs = Date.now() - fileStart;
+    return { filename: fileHunkEntry.filename, result, durationMs };
+  }
+
+  // Collect results in input order (Promise.all preserves order)
+  const fileResults: { filename: string; result: FileAnalysisResult; durationMs: number }[] = [];
+
   // Process files - parallel or sequential based on options
   if (parallel) {
     // Process files in parallel with concurrency limit
@@ -551,17 +575,12 @@ export async function runSkill(
       }
 
       const batch = fileHunks.slice(i, i + fileConcurrency);
-      const batchPromises = batch.map((fileHunkEntry, batchIndex) =>
-        processFile(fileHunkEntry, i + batchIndex)
+      const batchResults = await Promise.all(
+        batch.map((fileHunkEntry, batchIndex) =>
+          processFileWithTiming(fileHunkEntry, i + batchIndex)
+        )
       );
-
-      const batchResults = await Promise.all(batchPromises);
-      for (const result of batchResults) {
-        allFindings.push(...result.findings);
-        allUsage.push(result.usage);
-        totalFailedHunks += result.failedHunks;
-        totalFailedExtractions += result.failedExtractions;
-      }
+      fileResults.push(...batchResults);
     }
   } else {
     // Process files sequentially
@@ -569,11 +588,18 @@ export async function runSkill(
       // Check for abort before starting new file
       if (abortController?.signal.aborted) break;
 
-      const result = await processFile(fileHunkEntry, fileIndex);
-      allFindings.push(...result.findings);
-      allUsage.push(result.usage);
-      totalFailedHunks += result.failedHunks;
-      totalFailedExtractions += result.failedExtractions;
+      fileResults.push(await processFileWithTiming(fileHunkEntry, fileIndex));
+    }
+  }
+
+  // Accumulate results from ordered fileResults
+  for (const fr of fileResults) {
+    allFindings.push(...fr.result.findings);
+    allUsage.push(fr.result.usage);
+    totalFailedHunks += fr.result.failedHunks;
+    totalFailedExtractions += fr.result.failedExtractions;
+    if (fr.result.auxiliaryUsage) {
+      allAuxiliaryUsage.push(...fr.result.auxiliaryUsage);
     }
   }
 
@@ -601,6 +627,12 @@ export async function runSkill(
     findings: uniqueFindings,
     usage: totalUsage,
     durationMs: Date.now() - startTime,
+    files: fileResults.map((fr) => ({
+      filename: fr.filename,
+      findingCount: fr.result.findings.length,
+      durationMs: fr.durationMs,
+      usage: fr.result.usage,
+    })),
   };
   if (skippedFiles.length > 0) {
     report.skippedFiles = skippedFiles;
@@ -610,6 +642,10 @@ export async function runSkill(
   }
   if (totalFailedExtractions > 0) {
     report.failedExtractions = totalFailedExtractions;
+  }
+  const auxUsage = aggregateAuxiliaryUsage(allAuxiliaryUsage);
+  if (auxUsage) {
+    report.auxiliaryUsage = auxUsage;
   }
   return report;
 }

@@ -149,6 +149,115 @@ describe('writeJsonlReport', () => {
     expect(summary.type).toBe('summary');
   });
 
+  it('includes per-file records when files are present on report', () => {
+    const outputPath = join(testDir, 'files.jsonl');
+    const reports: SkillReport[] = [
+      {
+        skill: 'security-review',
+        summary: 'Found 1 issue',
+        findings: [
+          { id: 'sec-001', severity: 'high', title: 'SQL Injection', description: 'Bad' },
+        ],
+        durationMs: 2000,
+        usage: { inputTokens: 5000, outputTokens: 800, costUSD: 0.005 },
+        files: [
+          { filename: 'src/api.ts', findingCount: 1, durationMs: 1200, usage: { inputTokens: 3000, outputTokens: 500, costUSD: 0.003 } },
+          { filename: 'src/utils.ts', findingCount: 0, durationMs: 800, usage: { inputTokens: 2000, outputTokens: 300, costUSD: 0.002 } },
+        ],
+      },
+    ];
+
+    writeJsonlReport(outputPath, reports, 3000);
+
+    const content = readFileSync(outputPath, 'utf-8');
+    const lines = content.trim().split('\n');
+    expect(lines.length).toBe(2); // 1 report + 1 summary
+
+    const record = JSON.parse(lines[0]!) as JsonlRecord;
+    expect(record.files).toBeDefined();
+    expect(record.files!.length).toBe(2);
+    expect(record.files![0]!.filename).toBe('src/api.ts');
+    expect(record.files![0]!.findings).toBe(1);
+    expect(record.files![0]!.durationMs).toBe(1200);
+    expect(record.files![0]!.usage?.costUSD).toBe(0.003);
+    expect(record.files![1]!.filename).toBe('src/utils.ts');
+    expect(record.files![1]!.findings).toBe(0);
+  });
+
+  it('omits files field when report has no files', () => {
+    const outputPath = join(testDir, 'nofiles.jsonl');
+    const reports: SkillReport[] = [
+      {
+        skill: 'code-review',
+        summary: 'No issues',
+        findings: [],
+        durationMs: 500,
+      },
+    ];
+
+    writeJsonlReport(outputPath, reports, 1000);
+
+    const content = readFileSync(outputPath, 'utf-8');
+    const lines = content.trim().split('\n');
+    const record = JSON.parse(lines[0]!) as JsonlRecord;
+    expect(record.files).toBeUndefined();
+  });
+
+  it('aggregates auxiliary usage in summary', () => {
+    const outputPath = join(testDir, 'aux.jsonl');
+    const reports: SkillReport[] = [
+      {
+        skill: 'skill-1',
+        summary: 'Done',
+        findings: [],
+        usage: { inputTokens: 100, outputTokens: 50, costUSD: 0.001 },
+        auxiliaryUsage: {
+          extraction: { inputTokens: 20, outputTokens: 10, costUSD: 0.0001 },
+        },
+      },
+      {
+        skill: 'skill-2',
+        summary: 'Done',
+        findings: [],
+        usage: { inputTokens: 200, outputTokens: 100, costUSD: 0.002 },
+        auxiliaryUsage: {
+          extraction: { inputTokens: 30, outputTokens: 15, costUSD: 0.0002 },
+        },
+      },
+    ];
+
+    writeJsonlReport(outputPath, reports, 1000);
+
+    const content = readFileSync(outputPath, 'utf-8');
+    const lines = content.trim().split('\n');
+    const summary = JSON.parse(lines[2]!);
+
+    expect(summary.auxiliaryUsage).toBeDefined();
+    expect(summary.auxiliaryUsage.extraction.inputTokens).toBe(50);
+    expect(summary.auxiliaryUsage.extraction.outputTokens).toBe(25);
+    expect(summary.auxiliaryUsage.extraction.costUSD).toBeCloseTo(0.0003);
+  });
+
+  it('omits auxiliary usage from summary when none present', () => {
+    const outputPath = join(testDir, 'noaux.jsonl');
+    const reports: SkillReport[] = [
+      {
+        skill: 'skill-1',
+        summary: 'Done',
+        findings: [],
+        usage: { inputTokens: 100, outputTokens: 50, costUSD: 0.001 },
+      },
+    ];
+
+    writeJsonlReport(outputPath, reports, 1000);
+
+    const content = readFileSync(outputPath, 'utf-8');
+    const lines = content.trim().split('\n');
+    const summary = JSON.parse(lines[1]!);
+
+    expect(summary.auxiliaryUsage).toBeUndefined();
+  });
+
   it('counts findings by severity in summary', () => {
     const outputPath = join(testDir, 'severity.jsonl');
     const reports: SkillReport[] = [

@@ -1,7 +1,8 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
-import type { SkillReport, UsageStats } from '../../types/index.js';
+import type { SkillReport, UsageStats, AuxiliaryUsageMap } from '../../types/index.js';
+import { mergeAuxiliaryUsage } from '../../sdk/usage.js';
 import { countBySeverity } from './formatters.js';
 
 /**
@@ -44,6 +45,16 @@ export interface JsonlRunMetadata {
 }
 
 /**
+ * Per-file record within a JSONL skill record.
+ */
+export interface JsonlFileRecord {
+  filename: string;
+  findings: number;
+  durationMs?: number;
+  usage?: UsageStats;
+}
+
+/**
  * A single JSONL record representing one skill's report.
  */
 export interface JsonlRecord {
@@ -54,6 +65,8 @@ export interface JsonlRecord {
   metadata?: Record<string, unknown>;
   durationMs?: number;
   usage?: UsageStats;
+  auxiliaryUsage?: AuxiliaryUsageMap;
+  files?: JsonlFileRecord[];
 }
 
 /**
@@ -104,19 +117,33 @@ export function writeJsonlReport(
       metadata: report.metadata,
       durationMs: report.durationMs,
       usage: report.usage,
+      auxiliaryUsage: report.auxiliaryUsage,
+      files: report.files?.map((f) => ({
+        filename: f.filename,
+        findings: f.findingCount,
+        durationMs: f.durationMs,
+        usage: f.usage,
+      })),
     };
     lines.push(JSON.stringify(record));
   }
 
   // Write a summary line at the end
   const allFindings = reports.flatMap((r) => r.findings);
-  const summaryRecord = {
+  const totalAuxiliaryUsage = reports.reduce<AuxiliaryUsageMap | undefined>(
+    (acc, r) => mergeAuxiliaryUsage(acc, r.auxiliaryUsage),
+    undefined
+  );
+  const summaryRecord: Record<string, unknown> = {
     run: runMetadata,
     type: 'summary',
     totalFindings: allFindings.length,
     bySeverity: countBySeverity(allFindings),
     usage: aggregateUsage(reports),
   };
+  if (totalAuxiliaryUsage) {
+    summaryRecord['auxiliaryUsage'] = totalAuxiliaryUsage;
+  }
   lines.push(JSON.stringify(summaryRecord));
 
   // Ensure parent directory exists

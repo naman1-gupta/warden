@@ -9,8 +9,10 @@ import {
   prepareFiles,
   analyzeFile,
   aggregateUsage,
+  aggregateAuxiliaryUsage,
   deduplicateFindings,
   generateSummary,
+  type AuxiliaryUsageEntry,
   type SkillRunnerOptions,
   type FileAnalysisCallbacks,
   type PreparedFile,
@@ -22,7 +24,19 @@ import { Verbosity } from './verbosity.js';
 import type { OutputMode } from './tty.js';
 import { ICON_CHECK, ICON_SKIPPED } from './icons.js';
 import { timestamp } from './tty.js';
-import { formatDuration, formatLocation, formatSeverityPlain, formatFindingCountsPlain, countBySeverity, pluralize } from './formatters.js';
+import { formatDuration, formatCost, formatLocation, formatSeverityPlain, formatFindingCountsPlain, countBySeverity, pluralize } from './formatters.js';
+
+/**
+ * Result from processing a single file within a skill task.
+ */
+interface FileProcessResult {
+  findings: Finding[];
+  usage?: UsageStats;
+  durationMs: number;
+  failedHunks: number;
+  failedExtractions: number;
+  auxiliaryUsage?: AuxiliaryUsageEntry[];
+}
 
 /**
  * Write a log-mode message to stderr with timestamp prefix.
@@ -61,6 +75,8 @@ export interface FileState {
   currentHunk: number;
   totalHunks: number;
   findings: Finding[];
+  usage?: UsageStats;
+  durationMs?: number;
 }
 
 /**
@@ -197,8 +213,9 @@ export async function runSkillTask(
       : undefined;
 
     // Process files with concurrency
-    const processFile = async (prepared: PreparedFile, index: number): Promise<{ findings: Finding[]; usage?: UsageStats; failedHunks: number; failedExtractions: number }> => {
+    const processFile = async (prepared: PreparedFile, index: number): Promise<FileProcessResult> => {
       const filename = prepared.filename;
+      const fileStartTime = Date.now();
 
       // Update file state to running
       callbacks.onFileUpdate(name, filename, { status: 'running' });
@@ -246,18 +263,26 @@ export async function runSkillTask(
       );
 
       // Update file state to done
+      const fileDurationMs = Date.now() - fileStartTime;
       callbacks.onFileUpdate(name, filename, {
         status: 'done',
         findings: result.findings,
+        usage: result.usage,
+        durationMs: fileDurationMs,
       });
 
-      return { findings: result.findings, usage: result.usage, failedHunks: result.failedHunks, failedExtractions: result.failedExtractions };
+      return { findings: result.findings, usage: result.usage, durationMs: fileDurationMs, failedHunks: result.failedHunks, failedExtractions: result.failedExtractions, auxiliaryUsage: result.auxiliaryUsage };
     };
 
     // Process files in batches with concurrency
-    const allResults: { findings: Finding[]; usage?: UsageStats; failedHunks: number; failedExtractions: number }[] = [];
+    const allResults: FileProcessResult[] = [];
+    const batchDelayMs = runnerOptions.batchDelayMs ?? 0;
 
     for (let i = 0; i < preparedFiles.length; i += fileConcurrency) {
+      if (i > 0 && batchDelayMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, batchDelayMs));
+      }
+
       const batch = preparedFiles.slice(i, i + fileConcurrency);
       const batchResults = await Promise.all(
         batch.map((file, batchIndex) => processFile(file, i + batchIndex))
@@ -269,6 +294,7 @@ export async function runSkillTask(
     const duration = Date.now() - startTime;
     const allFindings = allResults.flatMap((r) => r.findings);
     const allUsage = allResults.map((r) => r.usage).filter((u): u is UsageStats => u !== undefined);
+    const allAuxEntries = allResults.flatMap((r) => r.auxiliaryUsage ?? []);
     const totalFailedHunks = allResults.reduce((sum, r) => sum + r.failedHunks, 0);
     const totalFailedExtractions = allResults.reduce((sum, r) => sum + r.failedExtractions, 0);
     const uniqueFindings = deduplicateFindings(allFindings);
@@ -279,6 +305,15 @@ export async function runSkillTask(
       findings: uniqueFindings,
       usage: aggregateUsage(allUsage),
       durationMs: duration,
+      files: preparedFiles.map((file, i) => {
+        const r = allResults[i];
+        return {
+          filename: file.filename,
+          findingCount: r?.findings.length ?? 0,
+          durationMs: r?.durationMs,
+          usage: r?.usage,
+        };
+      }),
     };
     if (skippedFiles.length > 0) {
       report.skippedFiles = skippedFiles;
@@ -288,6 +323,10 @@ export async function runSkillTask(
     }
     if (totalFailedExtractions > 0) {
       report.failedExtractions = totalFailedExtractions;
+    }
+    const auxUsage = aggregateAuxiliaryUsage(allAuxEntries);
+    if (auxUsage) {
+      report.auxiliaryUsage = auxUsage;
     }
 
     // Notify skill complete
@@ -331,7 +370,15 @@ export function createDefaultCallbacks(
       }
     },
     onSkillUpdate: () => { /* no-op for default callbacks */ },
-    onFileUpdate: () => { /* no-op for default callbacks */ },
+    onFileUpdate: (_skillName, filename, updates) => {
+      if (verbosity === Verbosity.Quiet || mode.isTTY) return;
+      if (updates.status !== 'done') return;
+      const duration = updates.durationMs !== undefined ? formatDuration(updates.durationMs) : '?';
+      const cost = updates.usage ? ` ${formatCost(updates.usage.costUSD)}` : '';
+      const n = updates.findings?.length ?? 0;
+      const suffix = n > 0 ? ` ${n} ${pluralize(n, 'finding')}` : '';
+      logPlain(`  ${displayNameFor(_skillName)} > ${filename} done ${duration}${cost}${suffix}`);
+    },
     onHunkStart: (skillName, filename, hunkNum, totalHunks, lineRange) => {
       if (verbosity === Verbosity.Quiet || mode.isTTY) return;
       logPlain(`  ${displayNameFor(skillName)} > ${filename} [${hunkNum}/${totalHunks}] ${lineRange}`);

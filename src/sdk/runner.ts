@@ -19,7 +19,10 @@ export { SkillRunnerError, WardenAuthenticationError, isRetryableError, isAuthen
 export { calculateRetryDelay } from './retry.js';
 
 // Re-export usage utilities
-export { aggregateUsage, estimateTokens } from './usage.js';
+export { aggregateUsage, aggregateAuxiliaryUsage, mergeAuxiliaryUsage, estimateTokens } from './usage.js';
+
+// Re-export pricing utilities
+export { apiUsageToStats } from './pricing.js';
 
 // Re-export prompt building (with legacy alias)
 export { buildHunkSystemPrompt, buildHunkUserPrompt } from './prompt.js';
@@ -47,6 +50,7 @@ export { analyzeFile, runSkill, generateSummary } from './analyze.js';
 
 // Re-export types
 export type {
+  AuxiliaryUsageEntry,
   SkillRunnerCallbacks,
   SkillRunnerOptions,
   PreparedFile,

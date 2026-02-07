@@ -1,7 +1,7 @@
 import type { Octokit } from '@octokit/rest';
 import { SEVERITY_ORDER, filterFindingsBySeverity } from '../types/index.js';
-import type { Severity, SeverityThreshold, Finding, SkillReport, UsageStats } from '../types/index.js';
-import { formatDuration, formatCost, formatTokens } from '../cli/output/formatters.js';
+import type { Severity, SeverityThreshold, Finding, SkillReport, UsageStats, AuxiliaryUsageMap } from '../types/index.js';
+import { formatDuration, formatCost, formatTokens, totalAuxiliaryCost, formatAuxiliarySuffix } from '../cli/output/formatters.js';
 import { escapeHtml } from '../utils/index.js';
 
 /**
@@ -50,6 +50,8 @@ export interface CoreCheckSummaryData {
   totalUsage?: UsageStats;
   /** All findings from all skills */
   findings: Finding[];
+  /** Aggregate auxiliary usage from all skills */
+  totalAuxiliaryUsage?: AuxiliaryUsageMap;
   skillResults: {
     name: string;
     findingCount: number;
@@ -338,13 +340,17 @@ function buildSkillSummary(report: SkillReport): string {
     if (report.usage) {
       const totalInput = report.usage.inputTokens + (report.usage.cacheReadInputTokens ?? 0);
       statsParts.push(`**Tokens:** ${formatTokens(totalInput)} in / ${formatTokens(report.usage.outputTokens)} out`);
-      statsParts.push(`**Cost:** ${formatCost(report.usage.costUSD)}`);
+      const auxCost = report.auxiliaryUsage ? totalAuxiliaryCost(report.auxiliaryUsage) : 0;
+      const totalCost = report.usage.costUSD + auxCost;
+      const auxSuffix = report.auxiliaryUsage ? formatAuxiliarySuffix(report.auxiliaryUsage) : '';
+      statsParts.push(`**Cost:** ${formatCost(totalCost)}${auxSuffix}`);
     }
     lines.push('---', statsParts.join(' · '));
   }
 
   return lines.join('\n');
 }
+
 
 /**
  * Format a file location as a markdown code span.
@@ -444,7 +450,10 @@ function buildCoreSummary(data: CoreCheckSummaryData): string {
     if (data.totalUsage) {
       const totalInput = data.totalUsage.inputTokens + (data.totalUsage.cacheReadInputTokens ?? 0);
       statsParts.push(`**Tokens:** ${formatTokens(totalInput)} in / ${formatTokens(data.totalUsage.outputTokens)} out`);
-      statsParts.push(`**Cost:** ${formatCost(data.totalUsage.costUSD)}`);
+      const auxCost = data.totalAuxiliaryUsage ? totalAuxiliaryCost(data.totalAuxiliaryUsage) : 0;
+      const totalCost = data.totalUsage.costUSD + auxCost;
+      const auxSuffix = data.totalAuxiliaryUsage ? formatAuxiliarySuffix(data.totalAuxiliaryUsage) : '';
+      statsParts.push(`**Cost:** ${formatCost(totalCost)}${auxSuffix}`);
     }
     lines.push('---', statsParts.join(' · '));
   }

@@ -2,6 +2,12 @@ import type { Finding, UsageStats, SkippedFile, RetryConfig } from '../types/ind
 import type { HunkWithContext } from '../diff/index.js';
 import type { ChunkingConfig } from '../config/schema.js';
 
+/** A single auxiliary usage entry, keyed by agent name (e.g. 'extraction', 'dedup'). */
+export interface AuxiliaryUsageEntry {
+  agent: string;
+  usage: UsageStats;
+}
+
 /** Default concurrency for file-level parallel processing */
 export const DEFAULT_FILE_CONCURRENCY = 5;
 
@@ -20,6 +26,8 @@ export interface HunkAnalysisResult {
   extractionError?: string;
   /** Preview of the output that failed to parse */
   extractionPreview?: string;
+  /** Usage from auxiliary LLM calls (e.g., extraction repair) */
+  auxiliaryUsage?: AuxiliaryUsageEntry[];
 }
 
 /**
@@ -127,6 +135,8 @@ export interface FileAnalysisResult {
   failedHunks: number;
   /** Number of hunks where findings extraction failed */
   failedExtractions: number;
+  /** Usage from auxiliary LLM calls across all hunks */
+  auxiliaryUsage?: AuxiliaryUsageEntry[];
 }
 
 /**
