@@ -16,6 +16,8 @@ export interface FileState {
     currentHunk: number;
     totalHunks: number;
     findings: Finding[];
+    usage?: UsageStats;
+    durationMs?: number;
 }
 /**
  * State of a skill being executed.
@@ -69,6 +71,8 @@ export interface SkillProgressCallbacks {
     onSkillStart: (skill: SkillState) => void;
     onSkillUpdate: (name: string, updates: Partial<SkillState>) => void;
     onFileUpdate: (skillName: string, filename: string, updates: Partial<FileState>) => void;
+    /** Called when a hunk analysis starts (one SDK invocation per hunk) */
+    onHunkStart?: (skillName: string, filename: string, hunkNum: number, totalHunks: number, lineRange: string) => void;
     onSkillComplete: (name: string, report: SkillReport) => void;
     onSkillSkipped: (name: string) => void;
     onSkillError: (name: string, error: string) => void;
@@ -76,11 +80,19 @@ export interface SkillProgressCallbacks {
     onLargePrompt?: (skillName: string, filename: string, lineRange: string, chars: number, estimatedTokens: number) => void;
     /** Called with prompt size info in debug mode */
     onPromptSize?: (skillName: string, filename: string, lineRange: string, systemChars: number, userChars: number, totalChars: number, estimatedTokens: number) => void;
+    /** Called with extraction result details (debug mode) */
+    onExtractionResult?: (skillName: string, filename: string, lineRange: string, findingsCount: number, method: 'regex' | 'llm' | 'none') => void;
 }
 /**
  * Run a single skill task.
  */
 export declare function runSkillTask(options: SkillTaskOptions, fileConcurrency: number, callbacks: SkillProgressCallbacks): Promise<SkillTaskResult>;
+/**
+ * Create default progress callbacks for console output.
+ * In TTY mode: colored icons, chalk formatting.
+ * In non-TTY/log mode: timestamped lines with finding details.
+ */
+export declare function createDefaultCallbacks(tasks: SkillTaskOptions[], mode: OutputMode, verbosity: Verbosity): SkillProgressCallbacks;
 /**
  * Run multiple skill tasks with optional concurrency.
  * Uses callbacks to report progress for Ink rendering.

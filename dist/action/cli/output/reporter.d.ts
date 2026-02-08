@@ -25,9 +25,9 @@ export declare class Reporter {
      */
     private log;
     /**
-     * Output to stderr with timestamp (CI mode).
+     * Output to stderr with timestamp (plain/log mode).
      */
-    private logCI;
+    private logPlain;
     /**
      * Print the header with logo and version.
      */

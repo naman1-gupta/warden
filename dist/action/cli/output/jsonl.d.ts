@@ -1,4 +1,4 @@
-import type { SkillReport, UsageStats } from '../../types/index.js';
+import type { SkillReport, UsageStats, AuxiliaryUsageMap } from '../../types/index.js';
 /**
  * Get the default run logs directory.
  * Uses WARDEN_STATE_DIR env var if set, otherwise ~/.local/warden/runs
@@ -23,6 +23,15 @@ export interface JsonlRunMetadata {
     cwd: string;
 }
 /**
+ * Per-file record within a JSONL skill record.
+ */
+export interface JsonlFileRecord {
+    filename: string;
+    findings: number;
+    durationMs?: number;
+    usage?: UsageStats;
+}
+/**
  * A single JSONL record representing one skill's report.
  */
 export interface JsonlRecord {
@@ -33,6 +42,8 @@ export interface JsonlRecord {
     metadata?: Record<string, unknown>;
     durationMs?: number;
     usage?: UsageStats;
+    auxiliaryUsage?: AuxiliaryUsageMap;
+    files?: JsonlFileRecord[];
 }
 /**
  * Write skill reports to a JSONL file.

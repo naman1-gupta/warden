@@ -95,6 +95,11 @@ export declare const ScheduleConfigSchema: z.ZodObject<{
     fixBranchPrefix: z.ZodDefault<z.ZodString>;
 }, z.core.$strip>;
 export type ScheduleConfig = z.infer<typeof ScheduleConfigSchema>;
+export declare const WardenEnvironmentSchema: z.ZodEnum<{
+    local: "local";
+    github: "github";
+}>;
+export type WardenEnvironment = z.infer<typeof WardenEnvironmentSchema>;
 export declare const TriggerSchema: z.ZodObject<{
     name: z.ZodString;
     event: z.ZodEnum<{
@@ -132,6 +137,10 @@ export declare const TriggerSchema: z.ZodObject<{
     }, z.core.$strip>>;
     model: z.ZodOptional<z.ZodString>;
     maxTurns: z.ZodOptional<z.ZodNumber>;
+    environments: z.ZodOptional<z.ZodArray<z.ZodEnum<{
+        local: "local";
+        github: "github";
+    }>>>;
     schedule: z.ZodOptional<z.ZodObject<{
         issueTitle: z.ZodOptional<z.ZodString>;
         createFixPR: z.ZodDefault<z.ZodBoolean>;
@@ -304,6 +313,10 @@ export declare const WardenConfigSchema: z.ZodObject<{
         }, z.core.$strip>>;
         model: z.ZodOptional<z.ZodString>;
         maxTurns: z.ZodOptional<z.ZodNumber>;
+        environments: z.ZodOptional<z.ZodArray<z.ZodEnum<{
+            local: "local";
+            github: "github";
+        }>>>;
         schedule: z.ZodOptional<z.ZodObject<{
             issueTitle: z.ZodOptional<z.ZodString>;
             createFixPR: z.ZodDefault<z.ZodBoolean>;

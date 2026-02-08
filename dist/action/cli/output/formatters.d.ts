@@ -1,4 +1,4 @@
-import type { Severity, Finding, FileChange, UsageStats } from '../../types/index.js';
+import type { Severity, Finding, FileChange, UsageStats, AuxiliaryUsageMap } from '../../types/index.js';
 /**
  * Pluralize a word based on count.
  * @example pluralize(1, 'file') // 'file'
@@ -80,11 +80,26 @@ export declare function formatUsage(usage: UsageStats): string;
  */
 export declare function formatUsagePlain(usage: UsageStats): string;
 /**
+ * Calculate total auxiliary cost from an AuxiliaryUsageMap.
+ */
+export declare function totalAuxiliaryCost(auxiliaryUsage: AuxiliaryUsageMap): number;
+/**
+ * Format auxiliary cost breakdown as a parenthetical suffix.
+ * @example "(+extraction: $0.0012, +dedup: $0.0008)"
+ */
+export declare function formatAuxiliarySuffix(auxiliaryUsage: AuxiliaryUsageMap): string;
+/**
  * Format stats (duration, tokens, cost) into a compact single-line format.
  * Used for markdown footers in PR comments and check annotations.
  *
+ * When auxiliaryUsage is provided, the cost shown is primary + auxiliary total,
+ * with a breakdown suffix showing per-agent auxiliary costs.
+ *
  * @example formatStatsCompact(15800, { inputTokens: 3000, outputTokens: 680, costUSD: 0.0048 })
  * // Returns: "⏱ 15.8s · 3.0k in / 680 out · $0.0048"
+ *
+ * @example formatStatsCompact(15800, usage, { extraction: { ... costUSD: 0.001 } })
+ * // Returns: "⏱ 15.8s · 3.0k in / 680 out · $0.0058 (+extraction: $0.0010)"
  */
-export declare function formatStatsCompact(durationMs?: number, usage?: UsageStats): string;
+export declare function formatStatsCompact(durationMs?: number, usage?: UsageStats, auxiliaryUsage?: AuxiliaryUsageMap): string;
 //# sourceMappingURL=formatters.d.ts.map

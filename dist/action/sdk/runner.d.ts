@@ -13,13 +13,14 @@
  */
 export { SkillRunnerError, WardenAuthenticationError, isRetryableError, isAuthenticationError, isAuthenticationErrorMessage } from './errors.js';
 export { calculateRetryDelay } from './retry.js';
-export { aggregateUsage, estimateTokens } from './usage.js';
+export { aggregateUsage, aggregateAuxiliaryUsage, mergeAuxiliaryUsage, estimateTokens } from './usage.js';
+export { apiUsageToStats } from './pricing.js';
 export { buildHunkSystemPrompt, buildHunkUserPrompt } from './prompt.js';
 export type { PRPromptContext } from './prompt.js';
 export { buildHunkSystemPrompt as buildSystemPrompt } from './prompt.js';
-export { extractFindingsJson, extractBalancedJson, extractFindingsWithLLM, truncateForLLMFallback, deduplicateFindings, } from './extract.js';
+export { extractFindingsJson, extractBalancedJson, extractFindingsWithLLM, truncateForLLMFallback, deduplicateFindings, validateFindings, generateShortId, } from './extract.js';
 export type { ExtractFindingsResult } from './extract.js';
 export { prepareFiles } from './prepare.js';
 export { analyzeFile, runSkill, generateSummary } from './analyze.js';
-export type { SkillRunnerCallbacks, SkillRunnerOptions, PreparedFile, PrepareFilesOptions, PrepareFilesResult, FileAnalysisCallbacks, FileAnalysisResult, } from './types.js';
+export type { AuxiliaryUsageEntry, SkillRunnerCallbacks, SkillRunnerOptions, PreparedFile, PrepareFilesOptions, PrepareFilesResult, FileAnalysisCallbacks, FileAnalysisResult, } from './types.js';
 //# sourceMappingURL=runner.d.ts.map

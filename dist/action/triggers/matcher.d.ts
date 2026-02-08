@@ -1,4 +1,4 @@
-import type { Trigger } from '../config/schema.js';
+import type { Trigger, WardenEnvironment } from '../config/schema.js';
 import type { EventContext, Severity, SeverityThreshold, SkillReport } from '../types/index.js';
 /** Clear the glob cache (useful for testing) */
 export declare function clearGlobCache(): void;
@@ -12,7 +12,7 @@ export declare function matchGlob(pattern: string, path: string): boolean;
 /**
  * Check if a trigger matches the given event context.
  */
-export declare function matchTrigger(trigger: Trigger, context: EventContext): boolean;
+export declare function matchTrigger(trigger: Trigger, context: EventContext, environment?: WardenEnvironment): boolean;
 /**
  * Check if a report has any findings at or above the given severity threshold.
  * Returns false if failOn is 'off' (disabled).
