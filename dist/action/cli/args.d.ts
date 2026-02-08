@@ -26,6 +26,8 @@ export declare const CLIOptionsSchema: z.ZodObject<{
     model: z.ZodOptional<z.ZodString>;
     quiet: z.ZodDefault<z.ZodBoolean>;
     verbose: z.ZodDefault<z.ZodNumber>;
+    debug: z.ZodDefault<z.ZodBoolean>;
+    log: z.ZodDefault<z.ZodBoolean>;
     color: z.ZodOptional<z.ZodBoolean>;
     fix: z.ZodDefault<z.ZodBoolean>;
     force: z.ZodDefault<z.ZodBoolean>;

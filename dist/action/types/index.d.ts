@@ -85,6 +85,14 @@ export declare const UsageStatsSchema: z.ZodObject<{
     costUSD: z.ZodNumber;
 }, z.core.$strip>;
 export type UsageStats = z.infer<typeof UsageStatsSchema>;
+export declare const AuxiliaryUsageMapSchema: z.ZodRecord<z.ZodString, z.ZodObject<{
+    inputTokens: z.ZodNumber;
+    outputTokens: z.ZodNumber;
+    cacheReadInputTokens: z.ZodOptional<z.ZodNumber>;
+    cacheCreationInputTokens: z.ZodOptional<z.ZodNumber>;
+    costUSD: z.ZodNumber;
+}, z.core.$strip>>;
+export type AuxiliaryUsageMap = z.infer<typeof AuxiliaryUsageMapSchema>;
 export declare const SkippedFileSchema: z.ZodObject<{
     filename: z.ZodString;
     reason: z.ZodEnum<{
@@ -94,6 +102,19 @@ export declare const SkippedFileSchema: z.ZodObject<{
     pattern: z.ZodOptional<z.ZodString>;
 }, z.core.$strip>;
 export type SkippedFile = z.infer<typeof SkippedFileSchema>;
+export declare const FileReportSchema: z.ZodObject<{
+    filename: z.ZodString;
+    findingCount: z.ZodNumber;
+    durationMs: z.ZodOptional<z.ZodNumber>;
+    usage: z.ZodOptional<z.ZodObject<{
+        inputTokens: z.ZodNumber;
+        outputTokens: z.ZodNumber;
+        cacheReadInputTokens: z.ZodOptional<z.ZodNumber>;
+        cacheCreationInputTokens: z.ZodOptional<z.ZodNumber>;
+        costUSD: z.ZodNumber;
+    }, z.core.$strip>>;
+}, z.core.$strip>;
+export type FileReport = z.infer<typeof FileReportSchema>;
 export declare const SkillReportSchema: z.ZodObject<{
     skill: z.ZodString;
     summary: z.ZodString;
@@ -143,6 +164,25 @@ export declare const SkillReportSchema: z.ZodObject<{
     }, z.core.$strip>>>;
     failedHunks: z.ZodOptional<z.ZodNumber>;
     failedExtractions: z.ZodOptional<z.ZodNumber>;
+    auxiliaryUsage: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodObject<{
+        inputTokens: z.ZodNumber;
+        outputTokens: z.ZodNumber;
+        cacheReadInputTokens: z.ZodOptional<z.ZodNumber>;
+        cacheCreationInputTokens: z.ZodOptional<z.ZodNumber>;
+        costUSD: z.ZodNumber;
+    }, z.core.$strip>>>;
+    files: z.ZodOptional<z.ZodArray<z.ZodObject<{
+        filename: z.ZodString;
+        findingCount: z.ZodNumber;
+        durationMs: z.ZodOptional<z.ZodNumber>;
+        usage: z.ZodOptional<z.ZodObject<{
+            inputTokens: z.ZodNumber;
+            outputTokens: z.ZodNumber;
+            cacheReadInputTokens: z.ZodOptional<z.ZodNumber>;
+            cacheCreationInputTokens: z.ZodOptional<z.ZodNumber>;
+            costUSD: z.ZodNumber;
+        }, z.core.$strip>>;
+    }, z.core.$strip>>>;
 }, z.core.$strip>;
 export type SkillReport = z.infer<typeof SkillReportSchema>;
 export declare const GitHubEventTypeSchema: z.ZodEnum<{

@@ -1,5 +1,5 @@
 import type { Octokit } from '@octokit/rest';
-import type { Severity, SeverityThreshold, Finding, SkillReport, UsageStats } from '../types/index.js';
+import type { Severity, SeverityThreshold, Finding, SkillReport, UsageStats, AuxiliaryUsageMap } from '../types/index.js';
 /**
  * GitHub Check annotation for inline code comments.
  */
@@ -42,6 +42,8 @@ export interface CoreCheckSummaryData {
     totalUsage?: UsageStats;
     /** All findings from all skills */
     findings: Finding[];
+    /** Aggregate auxiliary usage from all skills */
+    totalAuxiliaryUsage?: AuxiliaryUsageMap;
     skillResults: {
         name: string;
         findingCount: number;

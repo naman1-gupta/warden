@@ -1,6 +1,11 @@
 import type { Finding, UsageStats, SkippedFile, RetryConfig } from '../types/index.js';
 import type { HunkWithContext } from '../diff/index.js';
 import type { ChunkingConfig } from '../config/schema.js';
+/** A single auxiliary usage entry, keyed by agent name (e.g. 'extraction', 'dedup'). */
+export interface AuxiliaryUsageEntry {
+    agent: string;
+    usage: UsageStats;
+}
 /** Default concurrency for file-level parallel processing */
 export declare const DEFAULT_FILE_CONCURRENCY = 5;
 /** Threshold in characters above which to warn about large prompts (~25k tokens) */
@@ -17,6 +22,8 @@ export interface HunkAnalysisResult {
     extractionError?: string;
     /** Preview of the output that failed to parse */
     extractionPreview?: string;
+    /** Usage from auxiliary LLM calls (e.g., extraction repair) */
+    auxiliaryUsage?: AuxiliaryUsageEntry[];
 }
 /**
  * Callbacks for progress reporting during skill execution.
@@ -36,6 +43,8 @@ export interface SkillRunnerCallbacks {
     onRetry?: (file: string, lineRange: string, attempt: number, maxRetries: number, error: string, delayMs: number) => void;
     /** Called when findings extraction fails (both regex and LLM fallback failed) */
     onExtractionFailure?: (file: string, lineRange: string, error: string, preview: string) => void;
+    /** Called with extraction result details (debug mode) */
+    onExtractionResult?: (file: string, lineRange: string, findingsCount: number, method: 'regex' | 'llm' | 'none') => void;
 }
 export interface SkillRunnerOptions {
     apiKey?: string;
@@ -101,6 +110,8 @@ export interface FileAnalysisCallbacks {
     onRetry?: (lineRange: string, attempt: number, maxRetries: number, error: string, delayMs: number) => void;
     /** Called when findings extraction fails (both regex and LLM fallback failed) */
     onExtractionFailure?: (lineRange: string, error: string, preview: string) => void;
+    /** Called with extraction result details (debug mode) */
+    onExtractionResult?: (lineRange: string, findingsCount: number, method: 'regex' | 'llm' | 'none') => void;
 }
 /**
  * Result from analyzing a single file.
@@ -113,6 +124,8 @@ export interface FileAnalysisResult {
     failedHunks: number;
     /** Number of hunks where findings extraction failed */
     failedExtractions: number;
+    /** Usage from auxiliary LLM calls across all hunks */
+    auxiliaryUsage?: AuxiliaryUsageEntry[];
 }
 /**
  * Callbacks for prompt size reporting during hunk analysis.
@@ -123,5 +136,7 @@ export interface HunkAnalysisCallbacks {
     onPromptSize?: (lineRange: string, systemChars: number, userChars: number, totalChars: number, estimatedTokens: number) => void;
     onRetry?: (lineRange: string, attempt: number, maxRetries: number, error: string, delayMs: number) => void;
     onExtractionFailure?: (lineRange: string, error: string, preview: string) => void;
+    /** Called with extraction result details (debug mode) */
+    onExtractionResult?: (lineRange: string, findingsCount: number, method: 'regex' | 'llm' | 'none') => void;
 }
 //# sourceMappingURL=types.d.ts.map

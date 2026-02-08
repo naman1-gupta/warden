@@ -1,5 +1,5 @@
 import type { Octokit } from '@octokit/rest';
-import type { Finding } from '../types/index.js';
+import type { Finding, UsageStats } from '../types/index.js';
 /**
  * Parsed marker data from a Warden comment.
  */
@@ -53,6 +53,8 @@ export interface DeduplicateResult {
     newFindings: Finding[];
     /** Actions to take for duplicate findings */
     duplicateActions: DuplicateAction[];
+    /** Usage from semantic dedup LLM call, if invoked */
+    dedupUsage?: UsageStats;
 }
 /**
  * Generate a short content hash from title and description.
