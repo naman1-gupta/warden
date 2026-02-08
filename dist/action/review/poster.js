@@ -1,7 +1,7 @@
 /**
  * Review Poster
  *
- * Handles posting GitHub PR reviews with deduplication and coordination.
+ * Handles posting GitHub PR reviews with deduplication.
  * Extracted from main.ts to isolate the complex review posting state machine.
  */
 import { filterFindingsBySeverity } from '../../types/index.js';
@@ -9,7 +9,6 @@ import { shouldFail } from '../../triggers/matcher.js';
 import { renderSkillReport } from '../../output/renderer.js';
 import { deduplicateFindings, processDuplicateActions, findingToExistingComment, } from '../../output/dedup.js';
 import { mergeAuxiliaryUsage } from '../../sdk/usage.js';
-import { applyCoordinationToReview } from '../review-state.js';
 // -----------------------------------------------------------------------------
 // GitHub Review Posting
 // -----------------------------------------------------------------------------
@@ -58,25 +57,20 @@ async function postReviewToGitHub(octokit, context, result) {
  * - Filtering findings by reportOn threshold
  * - Deduplicating against existing comments
  * - Processing duplicate actions (reactions, updates)
- * - Applying coordination decisions
  * - Posting the final review
  */
 export async function postTriggerReview(ctx, deps) {
-    const { result, coordination, existingComments, apiKey } = ctx;
+    const { result, existingComments, apiKey } = ctx;
     const { octokit, context } = deps;
     const newComments = [];
     if (!result.report) {
         return { posted: false, newComments, shouldFail: false };
     }
-    const needsApproval = coordination?.reviewEvent === 'APPROVE';
-    if (coordination?.approvalSuppressed) {
-        console.log(`Suppressing APPROVE for ${result.triggerName}: ${coordination.suppressionReason}`);
-    }
     // Filter findings by reportOn threshold
     const filteredFindings = filterFindingsBySeverity(result.report.findings, result.reportOn);
     const reportOnSuccess = result.reportOnSuccess ?? false;
     // Skip if nothing to post
-    if (!result.renderResult || (filteredFindings.length === 0 && !reportOnSuccess && !needsApproval)) {
+    if (!result.renderResult || (filteredFindings.length === 0 && !reportOnSuccess)) {
         return { posted: false, newComments, shouldFail: false };
     }
     try {
@@ -113,15 +107,10 @@ export async function postTriggerReview(ctx, deps) {
         }
         // Check if failOn threshold is met (even if all findings deduplicated, we still need REQUEST_CHANGES)
         const needsRequestChanges = result.failOn && shouldFail(result.report, result.failOn);
-        // Only post if we have non-duplicate findings, reportOnSuccess, approval needed, or REQUEST_CHANGES needed
-        if (findingsToPost.length > 0 || reportOnSuccess || needsApproval || needsRequestChanges) {
+        // Only post if we have non-duplicate findings, reportOnSuccess, or REQUEST_CHANGES needed
+        if (findingsToPost.length > 0 || reportOnSuccess || needsRequestChanges) {
             // Re-render with deduplicated findings if any were removed
-            // Don't pass previousReviewState if this trigger's approval was suppressed
-            // (to avoid re-rendering as APPROVE when coordination decided otherwise)
-            const effectivePreviousReviewState = coordination?.approvalSuppressed
-                ? null
-                : result.previousReviewState;
-            let renderResultToPost = findingsToPost.length !== filteredFindings.length
+            const renderResultToPost = findingsToPost.length !== filteredFindings.length
                 ? renderSkillReport({ ...result.report, findings: findingsToPost }, {
                     maxFindings: result.maxFindings,
                     reportOn: result.reportOn,
@@ -130,16 +119,8 @@ export async function postTriggerReview(ctx, deps) {
                     totalFindings: result.report.findings.length,
                     // Pass original findings for failOn evaluation (not affected by dedup)
                     allFindings: result.report.findings,
-                    previousReviewState: effectivePreviousReviewState,
                 })
                 : result.renderResult;
-            // Apply coordinated review event (may downgrade APPROVE to COMMENT and clear body)
-            if (renderResultToPost?.review) {
-                const coordinatedReview = applyCoordinationToReview(renderResultToPost.review, coordination);
-                if (coordinatedReview !== renderResultToPost.review) {
-                    renderResultToPost = { ...renderResultToPost, review: coordinatedReview };
-                }
-            }
             await postReviewToGitHub(octokit, context, renderResultToPost);
             // Add newly posted findings to list for cross-trigger deduplication
             // Only include findings up to maxFindings since that's what was actually posted
