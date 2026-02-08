@@ -5,6 +5,7 @@
  * Extracted from main.ts to enable isolated testing and clearer dependencies.
  */
 import { resolveSkillAsync } from '../../skills/loader.js';
+import { filterContextByPaths } from '../../triggers/matcher.js';
 import { runSkillTask, createDefaultCallbacks } from '../../cli/output/tasks.js';
 import { renderSkillReport } from '../../output/renderer.js';
 import { createSkillCheck, updateSkillCheck, failSkillCheck, } from '../../output/github-checks.js';
@@ -44,8 +45,8 @@ export async function executeTrigger(trigger, deps) {
             console.error(`::warning::Failed to create skill check for ${trigger.skill}: ${error}`);
         }
     }
-    const failOn = trigger.output.failOn ?? deps.globalFailOn;
-    const commentOn = trigger.output.commentOn ?? deps.globalCommentOn;
+    const failOn = trigger.failOn ?? deps.globalFailOn;
+    const reportOn = trigger.reportOn ?? deps.globalReportOn;
     try {
         const taskOptions = {
             name: trigger.name,
@@ -54,11 +55,11 @@ export async function executeTrigger(trigger, deps) {
             resolveSkill: () => resolveSkillAsync(trigger.skill, context.repoPath, {
                 remote: trigger.remote,
             }),
-            context,
+            context: filterContextByPaths(context, trigger.filters),
             runnerOptions: {
                 apiKey: anthropicApiKey,
                 model: trigger.model,
-                maxTurns: trigger.maxTurns ?? config.defaults?.maxTurns,
+                maxTurns: trigger.maxTurns,
                 batchDelayMs: config.defaults?.batchDelayMs,
                 pathToClaudeCodeExecutable: claudePath,
             },
@@ -78,7 +79,7 @@ export async function executeTrigger(trigger, deps) {
                     repo: context.repository.name,
                     headSha: context.pullRequest.headSha,
                     failOn,
-                    commentOn,
+                    reportOn,
                 });
             }
             catch (error) {
@@ -88,11 +89,11 @@ export async function executeTrigger(trigger, deps) {
         // Render if we're going to post comments OR if we might need to approve
         // (approval can happen even with no comments when previousReviewState is CHANGES_REQUESTED)
         const mightNeedApproval = previousReviewState === 'CHANGES_REQUESTED' && failOn && failOn !== 'off';
-        const maxFindings = trigger.output.maxFindings ?? deps.globalMaxFindings;
-        const renderResult = commentOn !== 'off' || mightNeedApproval
+        const maxFindings = trigger.maxFindings ?? deps.globalMaxFindings;
+        const renderResult = reportOn !== 'off' || mightNeedApproval
             ? renderSkillReport(report, {
                 maxFindings,
-                commentOn,
+                reportOn,
                 failOn,
                 checkRunUrl: skillCheckUrl,
                 totalFindings: report.findings.length,
@@ -105,8 +106,8 @@ export async function executeTrigger(trigger, deps) {
             report,
             renderResult,
             failOn,
-            commentOn,
-            commentOnSuccess: trigger.output.commentOnSuccess,
+            reportOn,
+            reportOnSuccess: trigger.reportOnSuccess,
             checkRunUrl: skillCheckUrl,
             maxFindings,
             previousReviewState,
