@@ -27,6 +27,7 @@ const GitHubPullRequestSchema = z.object({
   user: GitHubUserSchema,
   base: z.object({
     ref: z.string(),
+    sha: z.string(),
   }),
   head: z.object({
     ref: z.string(),
@@ -88,6 +89,7 @@ export async function buildEventContext(
       baseBranch: pr.base.ref,
       headBranch: pr.head.ref,
       headSha: pr.head.sha,
+      baseSha: pr.base.sha,
       files,
     };
   }
@@ -115,7 +117,7 @@ async function fetchPullRequestFiles(
   repo: string,
   pullNumber: number
 ): Promise<FileChange[]> {
-  const { data: files } = await octokit.pulls.listFiles({
+  const files = await octokit.paginate(octokit.pulls.listFiles, {
     owner,
     repo,
     pull_number: pullNumber,

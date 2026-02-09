@@ -16,9 +16,13 @@ import {
 import type { ExistingComment } from '../../output/dedup.js';
 import { buildAnalyzedScope, findStaleComments, resolveStaleComments } from '../../output/stale.js';
 import type { EventContext, SkillReport } from '../../types/index.js';
+import { processInBatches } from '../../utils/index.js';
+import { evaluateFixAttempts, postThreadReply } from '../fix-evaluation/index.js';
+import type { FixEvaluation } from '../fix-evaluation/index.js';
+import { logAction, warnAction } from '../../cli/output/tty.js';
+import { formatCost, formatTokens, formatDuration } from '../../cli/output/formatters.js';
 import { findBotReviewState } from '../review-state.js';
 import type { BotReviewInfo } from '../review-state.js';
-import { processInBatches } from '../../utils/index.js';
 import type { ActionInputs } from '../inputs.js';
 import { executeTrigger } from '../triggers/executor.js';
 import { postTriggerReview } from '../review/poster.js';
@@ -61,7 +65,7 @@ async function getWardenPreviousReviewInfo(
     const botLogin = await getAuthenticatedBotLogin(octokit);
 
     if (!botLogin) {
-      console.log(
+      logAction(
         'Skipping dismiss flow: cannot identify bot (using PAT or GITHUB_TOKEN instead of GitHub App)'
       );
       return null;
@@ -78,7 +82,7 @@ async function getWardenPreviousReviewInfo(
 
     return findBotReviewState(reviews, botLogin);
   } catch (error) {
-    console.warn(`::warning::Failed to fetch previous review info: ${error}`);
+    warnAction(`Failed to fetch previous review info: ${error}`);
     return null;
   }
 }
@@ -100,6 +104,29 @@ async function dismissPreviousReview(
     review_id: reviewId,
     message: 'All previously reported issues have been resolved.',
   });
+}
+
+// -----------------------------------------------------------------------------
+// Fix Evaluation Logging
+// -----------------------------------------------------------------------------
+
+function logFixEvaluation(ev: FixEvaluation, index: number, total: number): void {
+  const totalTokens = ev.usage.inputTokens + ev.usage.outputTokens;
+  const costStr = ev.usage.costUSD > 0 ? `, ${formatCost(ev.usage.costUSD)}` : '';
+  const idPrefix = ev.findingId ? `${ev.findingId} ` : '';
+  const verdict = ev.usedFallback ? 'eval_error' : ev.verdict;
+
+  const line = `  [${index + 1}/${total}] ${idPrefix}${ev.path}:${ev.line} → ${verdict} (${formatDuration(ev.durationMs)}, ${formatTokens(totalTokens)} tok${costStr})`;
+
+  if (ev.usedFallback) {
+    warnAction(line);
+  } else {
+    logAction(line);
+  }
+
+  if (ev.verdict === 'attempted_failed' && ev.reasoning) {
+    logAction(`        reason: "${ev.reasoning}"`);
+  }
 }
 
 // -----------------------------------------------------------------------------
@@ -168,9 +195,9 @@ export async function runPRWorkflow(
         headSha: context.pullRequest.headSha,
       });
       coreCheckId = coreCheck.checkRunId;
-      console.log(`Created core check: ${coreCheck.url}`);
+      logAction(`Created core check: ${coreCheck.url}`);
     } catch (error) {
-      console.error(`::warning::Failed to create core check: ${error}`);
+      warnAction(`Failed to create core check: ${error}`);
     }
   }
 
@@ -184,7 +211,7 @@ export async function runPRWorkflow(
       context.pullRequest.number
     );
     if (previousReviewInfo) {
-      console.log(`Previous Warden review state: ${previousReviewInfo.state}`);
+      logAction(`Previous Warden review state: ${previousReviewInfo.state}`);
     }
   }
 
@@ -224,12 +251,12 @@ export async function runPRWorkflow(
       if (fetchedComments.length > 0) {
         const wardenCount = fetchedComments.filter((c) => c.isWarden).length;
         const externalCount = fetchedComments.length - wardenCount;
-        console.log(
+        logAction(
           `Found ${fetchedComments.length} existing comments for deduplication (${wardenCount} Warden, ${externalCount} external)`
         );
       }
     } catch (error) {
-      console.warn(`::warning::Failed to fetch existing comments for deduplication: ${error}`);
+      warnAction(`Failed to fetch existing comments for deduplication: ${error}`);
     }
   }
 
@@ -268,29 +295,106 @@ export async function runPRWorkflow(
   const triggerErrors = collectTriggerErrors(results);
   handleTriggerErrors(triggerErrors, matchedTriggers.length);
 
-  // Resolve stale Warden comments (comments that no longer have matching findings)
-  // Use fetchedComments (not existingComments) to only check comments that have threadIds
-  // Only resolve if ALL triggers succeeded - otherwise findings may be missing due to failures
-  // Filter to only Warden comments - we don't resolve external comments
+  // Evaluate follow-up commit fix attempts
   const canResolveStale = shouldResolveStaleComments(results);
   const wardenComments = fetchedComments.filter((c) => c.isWarden);
+  const allFindings = reports.flatMap((r) => r.findings);
+  const commentsResolvedByFixEval = new Set<number>();
+
+  if (
+    context.pullRequest &&
+    wardenComments.length > 0 &&
+    canResolveStale &&
+    inputs.anthropicApiKey
+  ) {
+    try {
+      logGroup('Fix evaluation');
+      const unresolvedCount = wardenComments.filter((c) => !c.isResolved && c.threadId).length;
+      if (unresolvedCount > 0) {
+        logAction(`Fix evaluation: evaluating ${unresolvedCount} unresolved comments`);
+      }
+
+      const fixEvaluation = await evaluateFixAttempts(
+        octokit,
+        wardenComments,
+        {
+          owner: context.repository.owner,
+          repo: context.repository.name,
+          baseSha: context.pullRequest.baseSha,
+          headSha: context.pullRequest.headSha,
+        },
+        allFindings,
+        inputs.anthropicApiKey
+      );
+
+      // Log per-evaluation details
+      fixEvaluation.evaluations.forEach((ev, i) =>
+        logFixEvaluation(ev, i, fixEvaluation.evaluations.length)
+      );
+
+      // Resolve successful fixes
+      if (fixEvaluation.toResolve.length > 0) {
+        const resolvedCount = await resolveStaleComments(octokit, fixEvaluation.toResolve);
+        if (resolvedCount > 0) {
+          logAction(`Resolved ${resolvedCount} comments via fix evaluation`);
+        }
+        // Track all attempted resolves so stale-comment pass skips them
+        // (resolveStaleComments handles individual failures internally)
+        fixEvaluation.toResolve.forEach((c) => commentsResolvedByFixEval.add(c.id));
+      }
+
+      // Post replies for failed fixes
+      for (const reply of fixEvaluation.toReply) {
+        if (reply.comment.threadId) {
+          try {
+            await postThreadReply(octokit, reply.comment.threadId, reply.replyBody);
+          } catch {
+            // Already logged in postThreadReply
+          }
+        }
+      }
+
+      if (fixEvaluation.evaluated > 0) {
+        const totalTokens = fixEvaluation.usage.inputTokens + fixEvaluation.usage.outputTokens;
+        let usageStr = '';
+        if (totalTokens > 0) {
+          usageStr = `, ${formatTokens(totalTokens)} tok, ${formatCost(fixEvaluation.usage.costUSD)}`;
+        }
+        logAction(
+          `Fix evaluation: ${fixEvaluation.toResolve.length} resolved, ` +
+            `${fixEvaluation.toReply.length} need attention, ` +
+            `${fixEvaluation.skipped} skipped` +
+            usageStr
+        );
+      }
+      logGroupEnd();
+    } catch (error) {
+      warnAction(`Failed to evaluate fix attempts: ${error}`);
+      logGroupEnd();
+    }
+  }
+
+  // Resolve stale Warden comments (comments that no longer have matching findings)
+  // Exclude comments already resolved by fix evaluation
   if (context.pullRequest && wardenComments.length > 0 && canResolveStale) {
     try {
-      const allFindings = reports.flatMap((r) => r.findings);
       const scope = buildAnalyzedScope(context.pullRequest.files);
-      const staleComments = findStaleComments(wardenComments, allFindings, scope);
+      const commentsForStaleCheck = wardenComments.filter(
+        (c) => !commentsResolvedByFixEval.has(c.id)
+      );
+      const staleComments = findStaleComments(commentsForStaleCheck, allFindings, scope);
 
       if (staleComments.length > 0) {
         const resolvedCount = await resolveStaleComments(octokit, staleComments);
         if (resolvedCount > 0) {
-          console.log(`Resolved ${resolvedCount} stale Warden comments`);
+          logAction(`Resolved ${resolvedCount} stale Warden comments`);
         }
       }
     } catch (error) {
-      console.warn(`::warning::Failed to resolve stale comments: ${error}`);
+      warnAction(`Failed to resolve stale comments: ${error}`);
     }
   } else if (!canResolveStale && wardenComments.length > 0) {
-    console.log('Skipping stale comment resolution due to trigger failures');
+    logAction('Skipping stale comment resolution due to trigger failures');
   }
 
   // Dismiss previous CHANGES_REQUESTED if all blocking issues are resolved.
@@ -312,9 +416,9 @@ export async function runPRWorkflow(
         context.pullRequest.number,
         previousReviewInfo.reviewId
       );
-      console.log('Dismissed previous CHANGES_REQUESTED review');
+      logAction('Dismissed previous CHANGES_REQUESTED review');
     } catch (error) {
-      console.warn(`::warning::Failed to dismiss previous review: ${error}`);
+      warnAction(`Failed to dismiss previous review: ${error}`);
     }
   }
 
@@ -333,7 +437,7 @@ export async function runPRWorkflow(
         repo: context.repository.name,
       });
     } catch (error) {
-      console.error(`::warning::Failed to update core check: ${error}`);
+      warnAction(`Failed to update core check: ${error}`);
     }
   }
 
@@ -341,5 +445,5 @@ export async function runPRWorkflow(
     setFailed(failureReasons.join('; '));
   }
 
-  console.log(`\nAnalysis complete: ${outputs.findingsCount} total findings`);
+  logAction(`Analysis complete: ${outputs.findingsCount} total findings`);
 }
