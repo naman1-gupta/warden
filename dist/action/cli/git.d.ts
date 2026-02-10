@@ -20,6 +20,8 @@ export declare function getHeadSha(cwd?: string): string;
 export declare function resolveRef(ref: string, cwd?: string): string;
 /**
  * Detect the default branch by checking common branch names locally.
+ * Also checks remote tracking refs (origin/*) for shallow clones
+ * where local branches may not exist (e.g. GitHub Actions).
  * Does not perform any remote operations to avoid SSH prompts.
  */
 export declare function getDefaultBranch(cwd?: string): string;
