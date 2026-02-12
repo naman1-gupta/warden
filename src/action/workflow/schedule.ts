@@ -18,6 +18,7 @@ import type { ActionInputs } from '../inputs.js';
 import {
   setOutput,
   setFailed,
+  ActionFailedError,
   logGroup,
   logGroupEnd,
   findClaudeCodeExecutable,
@@ -55,16 +56,16 @@ export async function runScheduleWorkflow(
   // Get repo info from environment
   const githubRepository = process.env['GITHUB_REPOSITORY'];
   if (!githubRepository) {
-    return await setFailed('GITHUB_REPOSITORY environment variable not set');
+    setFailed('GITHUB_REPOSITORY environment variable not set');
   }
   const [owner, repo] = githubRepository.split('/');
   if (!owner || !repo) {
-    return await setFailed('Invalid GITHUB_REPOSITORY format');
+    setFailed('Invalid GITHUB_REPOSITORY format');
   }
 
   const headSha = process.env['GITHUB_SHA'] ?? '';
   if (!headSha) {
-    return await setFailed('GITHUB_SHA environment variable not set');
+    setFailed('GITHUB_SHA environment variable not set');
   }
 
   const defaultBranch = await getDefaultBranchFromAPI(octokit, owner, repo);
@@ -167,6 +168,7 @@ export async function runScheduleWorkflow(
 
       logGroupEnd();
     } catch (error) {
+      if (error instanceof ActionFailedError) throw error;
       const errorMessage = error instanceof Error ? error.message : String(error);
       triggerErrors.push(`${resolved.name}: ${errorMessage}`);
       console.error(`::warning::Trigger ${resolved.name} failed: ${error}`);
@@ -174,7 +176,7 @@ export async function runScheduleWorkflow(
     }
   }
 
-  await handleTriggerErrors(triggerErrors, scheduleTriggers.length);
+  handleTriggerErrors(triggerErrors, scheduleTriggers.length);
 
   // Set outputs
   const criticalCount = countSeverity(allReports, 'critical');
@@ -186,7 +188,7 @@ export async function runScheduleWorkflow(
   setOutput('summary', allReports.map((r) => r.summary).join('\n') || 'Scheduled analysis complete');
 
   if (shouldFailAction) {
-    await setFailed(failureReasons.join('; '));
+    setFailed(failureReasons.join('; '));
   }
 
   console.log(`\nScheduled analysis complete: ${totalFindings} total findings`);
