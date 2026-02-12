@@ -1,0 +1,132 @@
+import * as Sentry from '@sentry/node';
+import type { Severity, SkillReport } from './types/index.js';
+import { SEVERITY_ORDER } from './types/index.js';
+import { getVersion } from './utils/index.js';
+
+export type SentryContext = 'cli' | 'action';
+
+let initialized = false;
+
+export function initSentry(context: SentryContext): void {
+  const dsn = process.env['WARDEN_SENTRY_DSN'];
+  if (!dsn || initialized) return;
+  initialized = true;
+
+  Sentry.init({
+    dsn,
+    release: `warden@${getVersion()}`,
+    environment: context === 'action' ? 'github-action' : 'cli',
+    tracesSampleRate: 1.0,
+    enableLogs: true,
+    integrations: [
+      Sentry.consoleLoggingIntegration({ levels: ['warn', 'error'] }),
+      Sentry.anthropicAIIntegration({ recordInputs: true, recordOutputs: true }),
+      Sentry.httpIntegration(),
+    ],
+  });
+
+  Sentry.setTag('deployment.context', context);
+  Sentry.setTag('service.version', getVersion());
+}
+
+export { Sentry };
+export const { logger } = Sentry;
+
+/**
+ * Run a metrics callback only when Sentry is initialized.
+ * Swallows errors so metrics never break the main workflow.
+ */
+function safeEmit(fn: () => void): void {
+  if (!initialized) return;
+  try {
+    fn();
+  } catch {
+    // Metrics emission should never break the main workflow
+  }
+}
+
+export function emitSkillMetrics(report: SkillReport): void {
+  safeEmit(() => {
+    const attrs = { skill: report.skill };
+
+    Sentry.metrics.distribution('skill.duration', report.durationMs ?? 0, {
+      unit: 'millisecond',
+      attributes: attrs,
+    });
+
+    if (report.usage) {
+      Sentry.metrics.distribution('tokens.input', report.usage.inputTokens, {
+        unit: 'none',
+        attributes: attrs,
+      });
+      Sentry.metrics.distribution('tokens.output', report.usage.outputTokens, {
+        unit: 'none',
+        attributes: attrs,
+      });
+      if (report.usage.costUSD) {
+        Sentry.metrics.distribution('cost.usd', report.usage.costUSD, { attributes: attrs });
+      }
+    }
+
+    Sentry.metrics.count('findings.total', report.findings.length, { attributes: attrs });
+    for (const severity of Object.keys(SEVERITY_ORDER) as Severity[]) {
+      const count = report.findings.filter((f) => f.severity === severity).length;
+      if (count > 0) {
+        Sentry.metrics.count('findings', count, {
+          attributes: { ...attrs, severity },
+        });
+      }
+    }
+  });
+}
+
+export function emitExtractionMetrics(skill: string, method: 'regex' | 'llm' | 'none', count: number): void {
+  safeEmit(() => {
+    const attrs = { skill, method };
+    Sentry.metrics.count('extraction.attempts', 1, { attributes: attrs });
+    Sentry.metrics.count('extraction.findings', count, { attributes: attrs });
+  });
+}
+
+export function emitFixEvalMetrics(evaluated: number, resolved: number, failed: number, skipped: number): void {
+  safeEmit(() => {
+    Sentry.metrics.count('fix_eval.evaluated', evaluated);
+    Sentry.metrics.count('fix_eval.resolved', resolved);
+    Sentry.metrics.count('fix_eval.failed', failed);
+    Sentry.metrics.count('fix_eval.skipped', skipped);
+  });
+}
+
+export function emitRetryMetric(skill: string, attempt: number): void {
+  safeEmit(() => {
+    Sentry.metrics.count('skill.retries', 1, { attributes: { skill, attempt } });
+  });
+}
+
+export function emitDedupMetrics(total: number, unique: number): void {
+  safeEmit(() => {
+    Sentry.metrics.distribution('dedup.total', total);
+    Sentry.metrics.distribution('dedup.unique', unique);
+    if (total > 0) {
+      Sentry.metrics.distribution('dedup.removed', total - unique);
+    }
+  });
+}
+
+export function emitStaleResolutionMetric(count: number): void {
+  safeEmit(() => {
+    Sentry.metrics.count('stale.resolved', count);
+  });
+}
+
+/**
+ * Flush pending Sentry events. Safe to call even if Sentry is not initialized.
+ */
+export async function flushSentry(timeoutMs = 2000): Promise<void> {
+  if (!initialized) return;
+  try {
+    await Sentry.flush(timeoutMs);
+  } catch {
+    // Sentry flush failure should not prevent normal operation
+  }
+}
