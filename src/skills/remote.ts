@@ -1,9 +1,9 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync, renameSync, readdirSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { z } from 'zod';
 import { execGitNonInteractive } from '../utils/exec.js';
-import { loadSkillFromMarkdown, SkillLoaderError } from './loader.js';
+import { loadSkillFromMarkdown, SkillLoaderError, AGENT_MARKER_FILE } from './loader.js';
 import type { SkillDefinition } from '../config/schema.js';
 
 /** Default TTL for unpinned remote skills: 24 hours */
@@ -141,6 +141,16 @@ export function parseRemoteRef(ref: string): ParsedRemoteRef {
   }
   if (sha?.startsWith('-')) {
     throw new SkillLoaderError(`Invalid remote ref: ${ref} (SHA cannot start with -)`);
+  }
+
+  // Security: Prevent path traversal via '..' in owner or repo.
+  // Only allow characters valid in GitHub usernames/repo names: alphanumeric, hyphens, dots, underscores.
+  const safeNamePattern = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
+  if (!safeNamePattern.test(owner)) {
+    throw new SkillLoaderError(`Invalid remote ref: ${ref} (owner contains invalid characters)`);
+  }
+  if (!safeNamePattern.test(repo)) {
+    throw new SkillLoaderError(`Invalid remote ref: ${ref} (repo contains invalid characters)`);
   }
 
   return { owner, repo, sha };
@@ -422,20 +432,34 @@ function parseMarketplaceConfig(remotePath: string): MarketplaceConfig | null {
 const REMOTE_SKILL_DIRECTORIES = [
   '',               // root level
   'skills',         // skills/ subdirectory
-  '.warden/skills', // Warden-specific
-  '.agents/skills', // General agent skills
+  '.agents/skills', // General agent skills (primary)
   '.claude/skills', // Claude Code skills
+  '.warden/skills', // Warden-specific (legacy)
+];
+
+/** Directories to search for agents in remote repositories */
+const REMOTE_AGENT_DIRECTORIES = [
+  '',               // root level
+  'agents',         // agents/ subdirectory
+  '.agents/agents', // Primary
+  '.claude/agents', // Claude Code agents
+  '.warden/agents', // Legacy
 ];
 
 /**
- * Discover skills using traditional directory layout.
- * Searches root level, skills/, and conventional skill directories.
+ * Discover entries (skills or agents) using traditional directory layout.
+ * Searches the given subdirectories for directories containing the marker file.
+ * First occurrence of a name wins (earlier directories have higher precedence).
  */
-async function discoverTraditionalSkills(remotePath: string): Promise<DiscoveredRemoteSkill[]> {
-  const skills: DiscoveredRemoteSkill[] = [];
+async function discoverTraditional(
+  remotePath: string,
+  directories: string[],
+  markerFile: string,
+): Promise<DiscoveredRemoteSkill[]> {
+  const results: DiscoveredRemoteSkill[] = [];
   const seenNames = new Set<string>();
 
-  for (const subdir of REMOTE_SKILL_DIRECTORIES) {
+  for (const subdir of directories) {
     const searchPath = subdir ? join(remotePath, subdir) : remotePath;
     if (!existsSync(searchPath)) continue;
 
@@ -448,28 +472,27 @@ async function discoverTraditionalSkills(remotePath: string): Promise<Discovered
       const stat = statSync(entryPath);
 
       if (stat.isDirectory()) {
-        const skillMdPath = join(entryPath, 'SKILL.md');
-        if (existsSync(skillMdPath)) {
+        const markerPath = join(entryPath, markerFile);
+        if (existsSync(markerPath)) {
           try {
-            const skill = await loadSkillFromMarkdown(skillMdPath);
-            // First occurrence wins (root takes precedence over skills/)
-            if (!seenNames.has(skill.name)) {
-              seenNames.add(skill.name);
-              skills.push({
-                name: skill.name,
-                description: skill.description,
+            const loaded = await loadSkillFromMarkdown(markerPath);
+            if (!seenNames.has(loaded.name)) {
+              seenNames.add(loaded.name);
+              results.push({
+                name: loaded.name,
+                description: loaded.description,
                 path: entryPath,
               });
             }
           } catch {
-            // Skip invalid skill directories
+            // Skip invalid entries
           }
         }
       }
     }
   }
 
-  return skills;
+  return results;
 }
 
 /**
@@ -488,6 +511,13 @@ async function discoverMarketplaceSkills(
     const pluginSource = plugin.source.replace(/^\.\//, '');
     const skillsPath = join(remotePath, pluginSource, 'skills');
 
+    // Security: Ensure plugin source doesn't escape the repo directory via path traversal
+    const resolvedSkillsPath = resolve(skillsPath);
+    const resolvedRemotePath = resolve(remotePath);
+    if (!resolvedSkillsPath.startsWith(resolvedRemotePath + '/')) {
+      continue; // Silently skip — attacker-controlled marketplace.json, don't leak info
+    }
+
     if (!existsSync(skillsPath)) continue;
 
     const entries = readdirSync(skillsPath);
@@ -503,7 +533,6 @@ async function discoverMarketplaceSkills(
         if (existsSync(skillMdPath)) {
           try {
             const skill = await loadSkillFromMarkdown(skillMdPath);
-            // First plugin wins for duplicate skill names
             if (!seenNames.has(skill.name)) {
               seenNames.add(skill.name);
               skills.push({
@@ -544,7 +573,39 @@ export async function discoverRemoteSkills(ref: string): Promise<DiscoveredRemot
   }
 
   // Fall back to traditional discovery
-  return discoverTraditionalSkills(remotePath);
+  return discoverTraditional(remotePath, REMOTE_SKILL_DIRECTORIES, 'SKILL.md');
+}
+
+/**
+ * Resolve a remote entry (skill or agent) by name.
+ * Fetches the remote, discovers available entries, and loads the matching one.
+ */
+async function resolveRemoteEntry(
+  ref: string,
+  name: string,
+  markerFile: string,
+  discoverFn: (ref: string) => Promise<DiscoveredRemoteSkill[]>,
+  label: string,
+  options: FetchRemoteOptions = {},
+): Promise<SkillDefinition> {
+  await fetchRemote(ref, options);
+
+  const available = await discoverFn(ref);
+  const match = available.find((entry) => entry.name === name);
+
+  if (match) {
+    return loadSkillFromMarkdown(join(match.path, markerFile));
+  }
+
+  const labelLower = label.toLowerCase();
+
+  if (available.length === 0) {
+    throw new SkillLoaderError(`No ${labelLower}s found in remote: ${ref}`);
+  }
+
+  throw new SkillLoaderError(
+    `${label} '${name}' not found in remote: ${ref}. Available ${labelLower}s: ${available.map((e) => e.name).join(', ')}`
+  );
 }
 
 /**
@@ -557,22 +618,7 @@ export async function resolveRemoteSkill(
   skillName: string,
   options: FetchRemoteOptions = {}
 ): Promise<SkillDefinition> {
-  await fetchRemote(ref, options);
-
-  const availableSkills = await discoverRemoteSkills(ref);
-  const match = availableSkills.find((s) => s.name === skillName);
-
-  if (match) {
-    return loadSkillFromMarkdown(join(match.path, 'SKILL.md'));
-  }
-
-  if (availableSkills.length === 0) {
-    throw new SkillLoaderError(`No skills found in remote: ${ref}`);
-  }
-
-  throw new SkillLoaderError(
-    `Skill '${skillName}' not found in remote: ${ref}. Available skills: ${availableSkills.map((s) => s.name).join(', ')}`
-  );
+  return resolveRemoteEntry(ref, skillName, 'SKILL.md', discoverRemoteSkills, 'Skill', options);
 }
 
 /**
@@ -597,4 +643,37 @@ export function removeRemote(ref: string): void {
 export function listCachedRemotes(): { ref: string; entry: RemoteEntry }[] {
   const state = loadState();
   return Object.entries(state.remotes).map(([ref, entry]) => ({ ref, entry }));
+}
+
+// =============================================================================
+// Agent Discovery (parallel to skills, using AGENT.md marker files)
+// =============================================================================
+
+export type DiscoveredRemoteAgent = DiscoveredRemoteSkill;
+
+/**
+ * Discover all agents in a cached remote repository.
+ * Uses traditional discovery only (no marketplace format for agents).
+ */
+export async function discoverRemoteAgents(ref: string): Promise<DiscoveredRemoteAgent[]> {
+  const remotePath = getRemotePath(ref);
+
+  if (!existsSync(remotePath)) {
+    throw new SkillLoaderError(`Remote not cached: ${ref}. Run fetch first.`);
+  }
+
+  return discoverTraditional(remotePath, REMOTE_AGENT_DIRECTORIES, AGENT_MARKER_FILE);
+}
+
+/**
+ * Resolve an agent from a remote repository.
+ * Ensures the remote is fetched/cached, then loads the agent.
+ * Matches by agent name (from AGENT.md), not directory name.
+ */
+export async function resolveRemoteAgent(
+  ref: string,
+  agentName: string,
+  options: FetchRemoteOptions = {}
+): Promise<SkillDefinition> {
+  return resolveRemoteEntry(ref, agentName, AGENT_MARKER_FILE, discoverRemoteAgents, 'Agent', options);
 }
