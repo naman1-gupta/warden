@@ -442,7 +442,7 @@ Each line in a JSONL file is one of three record types, discriminated by the pre
 
 **RunMetadata**: `{ timestamp: string, durationMs: number, cwd: string }`
 
-**UsageStats**: `{ inputTokens: int, outputTokens: int, cacheReadInputTokens?: int, cacheCreationInputTokens?: int, costUSD: number }`
+**UsageStats**: `{ inputTokens: int, outputTokens: int, cacheReadInputTokens?: int, cacheCreationInputTokens?: int, costUSD: number }` -- `inputTokens` is the total input token count; `cacheReadInputTokens` and `cacheCreationInputTokens` are subsets of it.
 
 **Finding**: `{ id: string, severity: Severity, confidence?: Confidence, title: string, description: string, location?: Location, suggestedFix?: SuggestedFix, elapsedMs?: number }`
 
