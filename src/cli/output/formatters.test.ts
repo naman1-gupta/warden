@@ -169,9 +169,9 @@ describe('formatStatsCompact', () => {
     expect(formatStatsCompact(15800, usage)).toBe('⏱ 15.8s · 3.0k in / 680 out · $0.00');
   });
 
-  it('includes cache read tokens in input total', () => {
+  it('uses inputTokens directly as total (cache tokens are subsets)', () => {
     const usage: UsageStats = {
-      inputTokens: 1000,
+      inputTokens: 3000,
       cacheReadInputTokens: 2000,
       outputTokens: 500,
       costUSD: 0.003,

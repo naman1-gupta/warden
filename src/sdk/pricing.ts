@@ -42,19 +42,29 @@ interface ApiUsage {
 /**
  * Convert Anthropic API usage to our UsageStats format.
  * Calculates cost from token counts using model pricing.
+ *
+ * The Anthropic API reports `input_tokens` as only the non-cached portion.
+ * We normalize so that `inputTokens` is the *total* input tokens
+ * (non-cached + cache_read + cache_creation), with the cache fields
+ * being subsets of that total.
  */
 export function apiUsageToStats(model: string, usage: ApiUsage): UsageStats {
   const pricing = MODEL_PRICING[model];
 
-  const inputTokens = usage.input_tokens;
   const outputTokens = usage.output_tokens;
   const cacheReadInputTokens = usage.cache_read_input_tokens ?? 0;
   const cacheCreationInputTokens = usage.cache_creation_input_tokens ?? 0;
 
+  // inputTokens is the total: raw API input_tokens + cache subsets.
+  const inputTokens = usage.input_tokens + cacheReadInputTokens + cacheCreationInputTokens;
+
+  // Cost: deduct cache subsets from total to get the non-cached portion,
+  // then charge each category at its respective rate.
   let costUSD = 0;
   if (pricing) {
+    const freshInputTokens = inputTokens - cacheReadInputTokens - cacheCreationInputTokens;
     costUSD =
-      inputTokens * pricing.inputPerToken +
+      freshInputTokens * pricing.inputPerToken +
       outputTokens * pricing.outputPerToken +
       cacheReadInputTokens * pricing.cacheReadPerToken +
       cacheCreationInputTokens * pricing.cacheCreationPerToken;

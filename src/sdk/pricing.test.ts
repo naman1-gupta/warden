@@ -22,7 +22,8 @@ describe('apiUsageToStats', () => {
       cache_creation_input_tokens: 100,
     });
 
-    expect(stats.inputTokens).toBe(1000);
+    // inputTokens is total: raw (1000) + cache_read (200) + cache_creation (100) = 1300
+    expect(stats.inputTokens).toBe(1300);
     expect(stats.outputTokens).toBe(500);
     expect(stats.cacheReadInputTokens).toBe(200);
     expect(stats.cacheCreationInputTokens).toBe(100);
@@ -61,6 +62,7 @@ describe('apiUsageToStats', () => {
       output_tokens: 500,
     });
 
+    // inputTokens is total: raw (1000) + no cache = 1000
     expect(stats.inputTokens).toBe(1000);
     expect(stats.outputTokens).toBe(500);
     expect(stats.costUSD).toBe(0);

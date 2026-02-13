@@ -11,16 +11,36 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_TOKENS = 4096;
 
 /**
+ * Anthropic Messages API usage shape accepted by setGenAiResponseAttrs.
+ */
+interface ApiResponseUsage {
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_input_tokens?: number | null;
+  cache_creation_input_tokens?: number | null;
+}
+
+/**
  * Set standard gen_ai response attributes on a Sentry span.
+ *
+ * Follows the same token accounting as analyze.ts: gen_ai.usage.input_tokens
+ * is the total (non-cached + cache_read + cache_creation), with cache fields
+ * as subsets.
  */
 export function setGenAiResponseAttrs(
   span: Span,
-  usage: { input_tokens: number; output_tokens: number },
+  usage: ApiResponseUsage,
   stopReason?: string | null,
   responseText?: string
 ): void {
-  span.setAttribute('gen_ai.usage.input_tokens', usage.input_tokens);
+  const cacheRead = usage.cache_read_input_tokens ?? 0;
+  const cacheWrite = usage.cache_creation_input_tokens ?? 0;
+  const totalInput = usage.input_tokens + cacheRead + cacheWrite;
+  span.setAttribute('gen_ai.usage.input_tokens', totalInput);
   span.setAttribute('gen_ai.usage.output_tokens', usage.output_tokens);
+  span.setAttribute('gen_ai.usage.input_tokens.cached', cacheRead);
+  span.setAttribute('gen_ai.usage.input_tokens.cache_write', cacheWrite);
+  span.setAttribute('gen_ai.usage.total_tokens', totalInput + usage.output_tokens);
   if (stopReason) {
     span.setAttribute('gen_ai.response.finish_reasons', [stopReason]);
   }
@@ -243,11 +263,17 @@ export async function callHaikuWithTools<T>(options: CallHaikuWithToolsOptions<T
       span.setAttribute('gen_ai.request.messages', JSON.stringify(messages));
 
       const usages: UsageStats[] = [];
-      let totalInputTokens = 0;
-      let totalOutputTokens = 0;
+      // Accumulate raw API usage across iterations so setGenAiResponseAttrs
+      // can compute totals consistently (input_tokens + cache subsets).
+      const cumulativeUsage = {
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read_input_tokens: 0,
+        cache_creation_input_tokens: 0,
+      };
 
       function setFinalSpanAttrs(stopReason?: string | null, responseText?: string): void {
-        setGenAiResponseAttrs(span, { input_tokens: totalInputTokens, output_tokens: totalOutputTokens }, stopReason, responseText);
+        setGenAiResponseAttrs(span, cumulativeUsage, stopReason, responseText);
       }
 
       function currentUsage(): UsageStats {
@@ -269,8 +295,10 @@ export async function callHaikuWithTools<T>(options: CallHaikuWithToolsOptions<T
         }
 
         usages.push(apiUsageToStats(HAIKU_MODEL, response.usage));
-        totalInputTokens += response.usage.input_tokens;
-        totalOutputTokens += response.usage.output_tokens;
+        cumulativeUsage.input_tokens += response.usage.input_tokens;
+        cumulativeUsage.output_tokens += response.usage.output_tokens;
+        cumulativeUsage.cache_read_input_tokens += response.usage.cache_read_input_tokens ?? 0;
+        cumulativeUsage.cache_creation_input_tokens += response.usage.cache_creation_input_tokens ?? 0;
 
         // Handle tool use
         if (response.stop_reason === 'tool_use') {

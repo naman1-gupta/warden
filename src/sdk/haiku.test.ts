@@ -10,13 +10,29 @@ describe('setGenAiResponseAttrs', () => {
     };
   }
 
-  it('sets usage and stop reason', () => {
+  it('sets usage with total input tokens and stop reason', () => {
+    const span = makeSpan();
+    setGenAiResponseAttrs(span as never, {
+      input_tokens: 10, output_tokens: 20,
+      cache_read_input_tokens: 5, cache_creation_input_tokens: 3,
+    }, 'end_turn');
+    // input_tokens is total: 10 + 5 + 3 = 18
+    expect(span.setAttribute).toHaveBeenCalledWith('gen_ai.usage.input_tokens', 18);
+    expect(span.setAttribute).toHaveBeenCalledWith('gen_ai.usage.output_tokens', 20);
+    expect(span.setAttribute).toHaveBeenCalledWith('gen_ai.usage.input_tokens.cached', 5);
+    expect(span.setAttribute).toHaveBeenCalledWith('gen_ai.usage.input_tokens.cache_write', 3);
+    expect(span.setAttribute).toHaveBeenCalledWith('gen_ai.usage.total_tokens', 38);
+    expect(span.setAttribute).toHaveBeenCalledWith('gen_ai.response.finish_reasons', ['end_turn']);
+    expect(span._attrs.has('gen_ai.response.text')).toBe(false);
+  });
+
+  it('handles missing cache fields as zero', () => {
     const span = makeSpan();
     setGenAiResponseAttrs(span as never, { input_tokens: 10, output_tokens: 20 }, 'end_turn');
     expect(span.setAttribute).toHaveBeenCalledWith('gen_ai.usage.input_tokens', 10);
-    expect(span.setAttribute).toHaveBeenCalledWith('gen_ai.usage.output_tokens', 20);
-    expect(span.setAttribute).toHaveBeenCalledWith('gen_ai.response.finish_reasons', ['end_turn']);
-    expect(span._attrs.has('gen_ai.response.text')).toBe(false);
+    expect(span.setAttribute).toHaveBeenCalledWith('gen_ai.usage.input_tokens.cached', 0);
+    expect(span.setAttribute).toHaveBeenCalledWith('gen_ai.usage.input_tokens.cache_write', 0);
+    expect(span.setAttribute).toHaveBeenCalledWith('gen_ai.usage.total_tokens', 30);
   });
 
   it('sets gen_ai.response.text when responseText is provided', () => {

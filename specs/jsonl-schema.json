@@ -39,7 +39,7 @@
         "inputTokens": {
           "type": "integer",
           "minimum": 0,
-          "description": "Fresh (non-cached) input tokens."
+          "description": "Total input tokens (includes cached and cache-creation tokens as subsets)."
         },
         "outputTokens": {
           "type": "integer",
@@ -49,12 +49,12 @@
         "cacheReadInputTokens": {
           "type": "integer",
           "minimum": 0,
-          "description": "Input tokens served from cache. Omitted when zero."
+          "description": "Input tokens served from cache (subset of inputTokens). Omitted when zero."
         },
         "cacheCreationInputTokens": {
           "type": "integer",
           "minimum": 0,
-          "description": "Input tokens that created new cache entries. Omitted when zero."
+          "description": "Input tokens that created new cache entries (subset of inputTokens). Omitted when zero."
         },
         "costUSD": {
           "type": "number",

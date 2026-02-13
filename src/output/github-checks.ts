@@ -351,8 +351,7 @@ function renderStatsFooter(
     parts.push(`**Duration:** ${formatDuration(durationMs)}`);
   }
   if (usage) {
-    const totalInput = usage.inputTokens + (usage.cacheReadInputTokens ?? 0);
-    parts.push(`**Tokens:** ${formatTokens(totalInput)} in / ${formatTokens(usage.outputTokens)} out`);
+    parts.push(`**Tokens:** ${formatTokens(usage.inputTokens)} in / ${formatTokens(usage.outputTokens)} out`);
     const auxCost = auxiliaryUsage ? totalAuxiliaryCost(auxiliaryUsage) : 0;
     const totalCost = usage.costUSD + auxCost;
     const auxSuffix = auxiliaryUsage ? formatAuxiliarySuffix(auxiliaryUsage) : '';

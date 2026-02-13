@@ -223,9 +223,7 @@ export function formatTokens(tokens: number): string {
  * Format usage stats for terminal display.
  */
 export function formatUsage(usage: UsageStats): string {
-  // Total input includes fresh tokens + cache reads
-  const totalInput = usage.inputTokens + (usage.cacheReadInputTokens ?? 0);
-  const inputStr = formatTokens(totalInput);
+  const inputStr = formatTokens(usage.inputTokens);
   const outputStr = formatTokens(usage.outputTokens);
   const costStr = formatCost(usage.costUSD);
   return `${inputStr} in / ${outputStr} out · ${costStr}`;
@@ -235,9 +233,7 @@ export function formatUsage(usage: UsageStats): string {
  * Format usage stats for plain text display.
  */
 export function formatUsagePlain(usage: UsageStats): string {
-  // Total input includes fresh tokens + cache reads
-  const totalInput = usage.inputTokens + (usage.cacheReadInputTokens ?? 0);
-  const inputStr = formatTokens(totalInput);
+  const inputStr = formatTokens(usage.inputTokens);
   const outputStr = formatTokens(usage.outputTokens);
   const costStr = formatCost(usage.costUSD);
   return `${inputStr} input, ${outputStr} output, ${costStr}`;
@@ -282,8 +278,7 @@ export function formatStatsCompact(durationMs?: number, usage?: UsageStats, auxi
   }
 
   if (usage) {
-    const totalInput = usage.inputTokens + (usage.cacheReadInputTokens ?? 0);
-    parts.push(`${formatTokens(totalInput)} in / ${formatTokens(usage.outputTokens)} out`);
+    parts.push(`${formatTokens(usage.inputTokens)} in / ${formatTokens(usage.outputTokens)} out`);
 
     const auxCost = auxiliaryUsage ? totalAuxiliaryCost(auxiliaryUsage) : 0;
     const totalCost = usage.costUSD + auxCost;
