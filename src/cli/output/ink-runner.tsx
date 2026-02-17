@@ -1,29 +1,17 @@
 /**
  * Ink-based skill runner with real-time progress display.
  *
- * ## Ink Rendering Constraints
+ * While skills run, the dynamic Ink area shows running skills and active files.
+ * After Ink unmounts, the full per-skill + per-file breakdown is printed to
+ * stderr, followed by the normal findings report.
  *
- * This file uses Ink (React for CLIs) which has specific constraints that,
- * if violated, cause duplicate output lines or corrupted display:
- *
- * 1. **Single Static component**: Ink's Static uses `position: 'absolute'`.
- *    Multiple Static components cause layout conflicts. We print the header
- *    before Ink starts to avoid needing a second Static.
- *
- * 2. **Stable item references**: Static tracks items by reference equality.
- *    Never wrap items in new objects (e.g., `{ type: 'skill', skill }`) on
- *    each render. Pass the original objects directly.
- *
- * 3. **Batched updates**: Rapid consecutive rerender() calls cause duplicate
- *    output. The updateUI() function batches updates using setImmediate().
- *
- * 4. **No direct writes to stderr**: Writing to process.stderr while Ink is
- *    running corrupts cursor tracking. The onLargePrompt/onPromptSize callbacks
- *    are exceptions that may cause minor display glitches in edge cases.
+ * UI updates are batched via setImmediate() to prevent rapid consecutive
+ * rerender() calls from producing duplicate output lines.
  */
 
 import React, { useState, useEffect } from 'react';
-import { render, Box, Text, Static } from 'ink';
+import { render, Box, Text } from 'ink';
+import chalk from 'chalk';
 import {
   runSkillTask,
   type SkillTaskOptions,
@@ -41,7 +29,6 @@ import figures from 'figures';
 
 interface SkillRunnerProps {
   skills: SkillState[];
-  completedItems: SkillState[];
   interrupted: boolean;
 }
 
@@ -58,47 +45,8 @@ function Spinner(): React.ReactElement {
   return <Text color="yellow">{SPINNER_FRAMES[frame]}</Text>;
 }
 
-function FileProgress({ file }: { file: FileState }): React.ReactElement | null {
-  if (file.status === 'pending') return null;
-
+function FileProgress({ file }: { file: FileState }): React.ReactElement {
   const filename = truncate(file.filename, 50);
-
-  if (file.status === 'skipped') {
-    return (
-      <Box>
-        <Text color="yellow">{ICON_SKIPPED}</Text>
-        <Text> {filename}</Text>
-        <Text dimColor> [skipped]</Text>
-      </Box>
-    );
-  }
-
-  if (file.status === 'done') {
-    const counts = countBySeverity(file.findings);
-    const hasFindings = file.findings.length > 0;
-
-    return (
-      <Box>
-        <Text color="green">{ICON_CHECK}</Text>
-        <Text> {filename}</Text>
-        <Text dimColor> [{file.totalHunks}/{file.totalHunks}]</Text>
-        {hasFindings && (
-          <Text>
-            {'  '}
-            {counts.critical > 0 && <Text>{formatSeverityDot('critical')} {counts.critical}  </Text>}
-            {counts.high > 0 && <Text>{formatSeverityDot('high')} {counts.high}  </Text>}
-            {counts.medium > 0 && <Text>{formatSeverityDot('medium')} {counts.medium}  </Text>}
-            {counts.low > 0 && <Text>{formatSeverityDot('low')} {counts.low}  </Text>}
-            {counts.info > 0 && <Text>{formatSeverityDot('info')} {counts.info}</Text>}
-          </Text>
-        )}
-        {file.durationMs !== undefined && <Text dimColor>  {formatDuration(file.durationMs)}</Text>}
-        {file.usage !== undefined && <Text dimColor>  {formatCost(file.usage.costUSD)}</Text>}
-      </Box>
-    );
-  }
-
-  // Running
   return (
     <Box>
       <Spinner />
@@ -107,51 +55,23 @@ function FileProgress({ file }: { file: FileState }): React.ReactElement | null 
   );
 }
 
-function CompletedSkill({ skill }: { skill: SkillState }): React.ReactElement {
-  const duration = skill.durationMs ? formatDuration(skill.durationMs) : '';
-
-  if (skill.status === 'skipped') {
-    return (
-      <Box>
-        <Text color="yellow">{ICON_SKIPPED}</Text>
-        <Text> {skill.displayName}</Text>
-        <Text dimColor> [skipped]</Text>
-      </Box>
-    );
-  }
-
-  if (skill.status === 'error') {
-    return (
-      <Box flexDirection="column">
-        <Box>
-          <Text color="red">{ICON_ERROR}</Text>
-          <Text> {skill.displayName}</Text>
-          {duration && <Text dimColor> [{duration}]</Text>}
-        </Box>
-        {skill.error && <Text color="red">  Error: {skill.error}</Text>}
-      </Box>
-    );
-  }
-
-  return (
-    <Box>
-      <Text color="green">{ICON_CHECK}</Text>
-      <Text> {skill.displayName}</Text>
-      {duration && <Text dimColor> [{duration}]</Text>}
-    </Box>
-  );
-}
-
 function RunningSkill({ skill }: { skill: SkillState }): React.ReactElement {
-  const visibleFiles = skill.files.filter((f) => f.status !== 'pending');
+  const activeFiles = skill.files.filter((f) => f.status === 'running');
+  const doneCount = skill.files.filter((f) => f.status === 'done' || f.status === 'skipped').length;
+  const totalCount = skill.files.length;
+  const findingCount = skill.files.reduce((sum, f) => sum + f.findings.length, 0);
+  const cost = skill.files.reduce((sum, f) => sum + (f.usage?.costUSD ?? 0), 0);
 
   return (
     <Box flexDirection="column">
       <Box>
         <Spinner />
         <Text> {skill.displayName}</Text>
+        {totalCount > 0 && <Text dimColor>  [{doneCount}/{totalCount} files]</Text>}
+        {findingCount > 0 && <Text>  {findingCount} {findingCount === 1 ? 'finding' : 'findings'}</Text>}
+        {cost > 0 && <Text dimColor>  {formatCost(cost)}</Text>}
       </Box>
-      {visibleFiles.map((file) => (
+      {activeFiles.map((file) => (
         <Box key={file.filename} marginLeft={2}>
           <FileProgress file={file} />
         </Box>
@@ -160,33 +80,48 @@ function RunningSkill({ skill }: { skill: SkillState }): React.ReactElement {
   );
 }
 
-/**
- * Renders the skill execution UI.
- *
- * IMPORTANT: Ink's Static component tracks items by reference equality.
- * Items passed to Static must have stable references across renders.
- * Creating new wrapper objects causes Static to mishandle its internal
- * state, resulting in duplicate output lines.
- *
- * We use a SINGLE Static component to avoid layout conflicts from multiple
- * absolutely-positioned Static containers.
- */
-function SkillRunner({ skills, completedItems, interrupted }: SkillRunnerProps): React.ReactElement {
+function CompletedSkill({ skill }: { skill: SkillState }): React.ReactElement {
+  if (skill.status === 'skipped') {
+    return (
+      <Text>
+        <Text color="yellow">{ICON_SKIPPED}</Text> {skill.displayName} <Text dimColor>[skipped]</Text>
+      </Text>
+    );
+  }
+
+  const findingCount = skill.findings.length;
+  const cost = skill.usage?.costUSD;
+  const duration = skill.durationMs ? formatDuration(skill.durationMs) : undefined;
+
+  if (skill.status === 'error') {
+    return (
+      <Text>
+        <Text color="red">{ICON_ERROR}</Text> {skill.displayName}
+        {duration && <Text dimColor> [{duration}]</Text>}
+      </Text>
+    );
+  }
+
+  return (
+    <Text>
+      <Text color="green">{ICON_CHECK}</Text> {skill.displayName}
+      {duration && <Text dimColor> [{duration}]</Text>}
+      {findingCount > 0 && <Text>  {findingCount} {findingCount === 1 ? 'finding' : 'findings'}</Text>}
+      {cost !== undefined && cost > 0 && <Text dimColor>  {formatCost(cost)}</Text>}
+    </Text>
+  );
+}
+
+function SkillRunner({ skills, interrupted }: SkillRunnerProps): React.ReactElement {
+  const completed = skills.filter((s) => s.status === 'done' || s.status === 'skipped' || s.status === 'error');
   const running = skills.filter((s) => s.status === 'running');
   const pending = skills.filter((s) => s.status === 'pending');
 
   return (
     <Box flexDirection="column">
-      {/*
-       * Completed skills - passed directly to Static WITHOUT wrapper objects.
-       * completedItems elements have stable references (same objects from parent),
-       * so Ink can correctly track which items are new vs already rendered.
-       */}
-      <Static items={completedItems}>
-        {(skill) => <CompletedSkill key={skill.name} skill={skill} />}
-      </Static>
-
-      {/* Dynamic content - updates in place */}
+      {completed.map((skill) => (
+        <CompletedSkill key={skill.name} skill={skill} />
+      ))}
       {running.map((skill) => (
         <RunningSkill key={skill.name} skill={skill} />
       ))}
@@ -204,6 +139,23 @@ function SkillRunner({ skills, completedItems, interrupted }: SkillRunnerProps):
   );
 }
 
+/** Create a terminal skill state for skills that were skipped or errored before starting. */
+function makeTerminalSkillState(
+  tasks: SkillTaskOptions[],
+  name: string,
+  overrides: Partial<SkillState>
+): SkillState {
+  const task = tasks.find((t) => t.name === name);
+  return {
+    name,
+    displayName: task?.displayName ?? name,
+    status: 'pending',
+    files: [],
+    findings: [],
+    ...overrides,
+  };
+}
+
 /** No-op callbacks for quiet mode. */
 // eslint-disable-next-line @typescript-eslint/no-empty-function
 const noop = () => {};
@@ -215,6 +167,54 @@ const noopCallbacks: SkillProgressCallbacks = {
   onSkillSkipped: noop,
   onSkillError: noop,
 };
+
+/** Severity levels in display order. */
+const SEVERITY_LEVELS = ['critical', 'high', 'medium', 'low', 'info'] as const;
+
+/** Print the per-file line within a skill summary. */
+function printFileSummary(file: FileState): void {
+  if (file.status === 'done') {
+    const filename = truncate(file.filename, 50);
+    const counts = countBySeverity(file.findings);
+    let line = `  ${chalk.green(ICON_CHECK)} ${filename} ${chalk.dim(`[${file.totalHunks}/${file.totalHunks}]`)}`;
+
+    const severityParts = SEVERITY_LEVELS
+      .filter((s) => counts[s] > 0)
+      .map((s) => `${formatSeverityDot(s)} ${counts[s]}`);
+    if (severityParts.length > 0) line += `  ${severityParts.join('  ')}`;
+
+    if (file.durationMs !== undefined) line += chalk.dim(`  ${formatDuration(file.durationMs)}`);
+    if (file.usage !== undefined) line += chalk.dim(`  ${formatCost(file.usage.costUSD)}`);
+    process.stderr.write(`${line}\n`);
+  } else if (file.status === 'skipped') {
+    const filename = truncate(file.filename, 50);
+    process.stderr.write(`  ${chalk.yellow(ICON_SKIPPED)} ${filename} ${chalk.dim('[skipped]')}\n`);
+  }
+}
+
+/** Print the full skill + file breakdown to stderr after Ink unmounts. */
+function printSkillSummary(skillStates: SkillState[]): void {
+  for (const skill of skillStates) {
+    const duration = skill.durationMs ? chalk.dim(` [${formatDuration(skill.durationMs)}]`) : '';
+
+    if (skill.status === 'done') {
+      process.stderr.write(`${chalk.green(ICON_CHECK)} ${skill.displayName}${duration}\n`);
+    } else if (skill.status === 'skipped') {
+      process.stderr.write(`${chalk.yellow(ICON_SKIPPED)} ${skill.displayName} ${chalk.dim('[skipped]')}\n`);
+    } else if (skill.status === 'error') {
+      process.stderr.write(`${chalk.red(ICON_ERROR)} ${skill.displayName}${duration}\n`);
+      if (skill.error) {
+        process.stderr.write(`${chalk.red(`  Error: ${skill.error}`)}\n`);
+      }
+    }
+
+    if (skill.status === 'done' || skill.status === 'error') {
+      for (const file of skill.files) {
+        printFileSummary(file);
+      }
+    }
+  }
+}
 
 /**
  * Run skill tasks with Ink-based real-time progress display.
@@ -238,19 +238,16 @@ export async function runSkillTasksWithInk(
 
   // Track skill states
   const skillStates: SkillState[] = [];
-  const completedItems: SkillState[] = [];
-  const completedNames = new Set<string>();
 
-  // Print header before Ink starts - this avoids multiple Static components
-  // which can cause layout conflicts due to absolute positioning
+  // Print header before Ink starts
   process.stderr.write('\x1b[1mSKILLS\x1b[0m\n');
 
   // Track interrupt state for rendering in the Ink component
   let interrupted = false;
 
   // Create Ink instance
-  const { rerender, unmount } = render(
-    <SkillRunner skills={skillStates} completedItems={completedItems} interrupted={false} />,
+  const { rerender, unmount, clear } = render(
+    <SkillRunner skills={skillStates} interrupted={false} />,
     { stdout: process.stderr }
   );
 
@@ -266,7 +263,7 @@ export async function runSkillTasksWithInk(
     setImmediate(() => {
       updatePending = false;
       if (unmounted) return;
-      rerender(<SkillRunner skills={[...skillStates]} completedItems={[...completedItems]} interrupted={interrupted} />);
+      rerender(<SkillRunner skills={[...skillStates]} interrupted={interrupted} />);
     });
   };
 
@@ -289,15 +286,7 @@ export async function runSkillTasksWithInk(
       const idx = skillStates.findIndex((s) => s.name === name);
       const existing = skillStates[idx];
       if (idx >= 0 && existing) {
-        const updated = { ...existing, ...updates };
-        skillStates[idx] = updated;
-
-        // If skill just completed, add to completedItems (only once)
-        if (updates.status === 'done' && !completedNames.has(name)) {
-          completedNames.add(name);
-          completedItems.push(updated);
-        }
-
+        skillStates[idx] = { ...existing, ...updates };
         updateUI();
       }
     },
@@ -315,47 +304,17 @@ export async function runSkillTasksWithInk(
       updateUI();
     },
     onSkillSkipped: (name) => {
-      const task = tasks.find((t) => t.name === name);
-      const state: SkillState = {
-        name,
-        displayName: task?.displayName ?? name,
-        status: 'skipped',
-        files: [],
-        findings: [],
-      };
-      skillStates.push(state);
-
-      if (!completedNames.has(name)) {
-        completedNames.add(name);
-        completedItems.push(state);
-      }
-
+      skillStates.push(makeTerminalSkillState(tasks, name, { status: 'skipped' }));
       updateUI();
     },
     onSkillError: (name, error) => {
       const idx = skillStates.findIndex((s) => s.name === name);
       const existing = skillStates[idx];
-      let state: SkillState;
 
       if (idx >= 0 && existing) {
-        state = { ...existing, status: 'error', error };
-        skillStates[idx] = state;
+        skillStates[idx] = { ...existing, status: 'error', error };
       } else {
-        const task = tasks.find((t) => t.name === name);
-        state = {
-          name,
-          displayName: task?.displayName ?? name,
-          status: 'error',
-          error,
-          files: [],
-          findings: [],
-        };
-        skillStates.push(state);
-      }
-
-      if (!completedNames.has(name)) {
-        completedNames.add(name);
-        completedItems.push(state);
+        skillStates.push(makeTerminalSkillState(tasks, name, { status: 'error', error }));
       }
 
       updateUI();
@@ -395,7 +354,10 @@ export async function runSkillTasksWithInk(
   // Cleanup - set unmounted flag before unmount to prevent pending setImmediate
   // callbacks from calling rerender on the unmounted Ink instance
   unmounted = true;
+  clear();
   unmount();
+
+  printSkillSummary(skillStates);
 
   return results;
 }
