@@ -1,6 +1,6 @@
-import { mkdirSync, writeFileSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { basename, dirname, join, resolve } from 'node:path';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { dirname, join, resolve } from 'node:path';
 import { z } from 'zod';
 import {
   UsageStatsSchema,
@@ -15,33 +15,26 @@ import { mergeAuxiliaryUsage } from '../../sdk/usage.js';
 import { countBySeverity } from './formatters.js';
 
 /**
- * Get the default run logs directory.
- * Uses WARDEN_STATE_DIR env var if set, otherwise ~/.local/warden/runs
+ * Generate a unique run ID for this execution.
  */
-export function getRunLogsDir(): string {
-  const stateDir = process.env['WARDEN_STATE_DIR'];
-  if (stateDir) {
-    return join(stateDir, 'runs');
-  }
-  return join(homedir(), '.local', 'warden', 'runs');
+export function generateRunId(): string {
+  return randomUUID();
 }
 
 /**
- * Generate a run log filename from directory name and timestamp.
- * Format: {dirname}_{timestamp}.jsonl
- * Timestamp has colons replaced with hyphens for filesystem compatibility.
+ * Get the first 8 hex chars (no dashes) of a UUID for use in filenames.
  */
-export function generateRunLogFilename(cwd: string, timestamp: Date = new Date()): string {
-  const dirName = basename(cwd) || 'unknown';
+export function shortRunId(runId: string): string {
+  return runId.replace(/-/g, '').slice(0, 8);
+}
+
+/**
+ * Get the repo-local log file path.
+ * Returns: {repoRoot}/.warden/logs/{ISO-datetime}-{runId8}.jsonl
+ */
+export function getRepoLogPath(repoRoot: string, runId: string, timestamp: Date = new Date()): string {
   const ts = timestamp.toISOString().replace(/:/g, '-');
-  return `${dirName}_${ts}.jsonl`;
-}
-
-/**
- * Get the full path for an automatic run log.
- */
-export function getRunLogPath(cwd: string, timestamp: Date = new Date()): string {
-  return join(getRunLogsDir(), generateRunLogFilename(cwd, timestamp));
+  return join(repoRoot, '.warden', 'logs', `${ts}-${shortRunId(runId)}.jsonl`);
 }
 
 /**
@@ -57,6 +50,7 @@ export const JsonlRunMetadataSchema = z.object({
   timestamp: z.string().datetime(),
   durationMs: z.number().nonnegative(),
   cwd: z.string(),
+  runId: z.string(),
   traceId: z.string().optional(),
 });
 export type JsonlRunMetadata = z.infer<typeof JsonlRunMetadataSchema>;
@@ -145,30 +139,28 @@ function aggregateUsage(reports: SkillReport[]): UsageStats | undefined {
 }
 
 /**
- * Write skill reports to a JSONL file.
+ * Render skill reports as a JSONL string.
  * Each line contains one skill report with run metadata.
  * A final summary line is appended at the end.
  */
-export function writeJsonlReport(
-  outputPath: string,
+export function renderJsonlString(
   reports: SkillReport[],
   durationMs: number,
-  options?: { traceId?: string }
-): void {
-  const resolvedPath = resolve(process.cwd(), outputPath);
-  const timestamp = new Date().toISOString();
+  options?: { runId?: string; traceId?: string; timestamp?: Date }
+): string {
+  const timestamp = (options?.timestamp ?? new Date()).toISOString();
   const cwd = process.cwd();
 
   const runMetadata: JsonlRunMetadata = {
     timestamp,
     durationMs,
     cwd,
+    runId: options?.runId ?? generateRunId(),
     traceId: options?.traceId,
   };
 
   const lines: string[] = [];
 
-  // Write one line per skill report
   for (const report of reports) {
     const record: JsonlRecord = {
       run: runMetadata,
@@ -192,7 +184,6 @@ export function writeJsonlReport(
     lines.push(JSON.stringify(record));
   }
 
-  // Write a summary line at the end
   const allFindings = reports.flatMap((r) => r.findings);
   const totalSkippedFiles = reports.reduce((n, r) => n + (r.skippedFiles?.length ?? 0), 0);
   const totalAuxiliaryUsage = reports.reduce<AuxiliaryUsageMap | undefined>(
@@ -210,8 +201,36 @@ export function writeJsonlReport(
   };
   lines.push(JSON.stringify(summaryRecord));
 
-  // Ensure parent directory exists
-  mkdirSync(dirname(resolvedPath), { recursive: true });
+  return lines.join('\n') + '\n';
+}
 
-  writeFileSync(resolvedPath, lines.join('\n') + '\n');
+/**
+ * Write skill reports to a JSONL file.
+ */
+export function writeJsonlReport(
+  outputPath: string,
+  reports: SkillReport[],
+  durationMs: number,
+  options?: { runId?: string; traceId?: string }
+): void {
+  const resolvedPath = resolve(process.cwd(), outputPath);
+  const content = renderJsonlString(reports, durationMs, options);
+  mkdirSync(dirname(resolvedPath), { recursive: true });
+  writeFileSync(resolvedPath, content);
+}
+
+/**
+ * Write pre-rendered JSONL content to a file path.
+ */
+export function writeJsonlContent(outputPath: string, content: string): void {
+  const resolvedPath = resolve(process.cwd(), outputPath);
+  mkdirSync(dirname(resolvedPath), { recursive: true });
+  writeFileSync(resolvedPath, content);
+}
+
+/**
+ * Read a JSONL log file and return its contents.
+ */
+export function readJsonlLog(logPath: string): string {
+  return readFileSync(logPath, 'utf-8');
 }
