@@ -48,6 +48,12 @@ export const abortController = new AbortController();
 export const interrupted = { value: false };
 
 /**
+ * Fail-fast abort controller. Created once and shared across run modes.
+ * Signals when the first finding is detected (if --fail-fast is active).
+ */
+let failFastController: AbortController | undefined;
+
+/**
  * Load environment variables from .env files in the given directory.
  * Loads .env first, then .env.local for local overrides.
  */
@@ -133,7 +139,8 @@ async function outputResultsAndHandleFixes(
   options: CLIOptions,
   reporter: Reporter,
   repoPath: string,
-  totalDuration: number
+  totalDuration: number,
+  failFastAborted?: boolean
 ): Promise<number> {
   const { reports, filteredReports, hasFailure, failureReasons } = processed;
 
@@ -153,6 +160,7 @@ async function outputResultsAndHandleFixes(
   const fixableFindings = collectFixableFindings(filteredReports);
   const willStepThrough = fixableFindings.length > 0
     && !interrupted.value
+    && !failFastAborted
     && !options.json
     && !options.fix
     && reporter.verbosity !== Verbosity.Quiet
@@ -167,10 +175,13 @@ async function outputResultsAndHandleFixes(
     console.log(renderTerminalReport(filteredReports, reporter.mode, { suppressFixDiffs: willStepThrough, verbosity: reporter.verbosity }));
   }
 
-  // Show interrupted banner before summary (read live to catch SIGINT during rendering)
-  if (interrupted.value) {
+  // Show interrupted / fail-fast banner before summary
+  if (failFastAborted) {
     reporter.blank();
-    reporter.warning('Interrupted — showing partial results');
+    reporter.warning('Stopped after first finding (--fail-fast)');
+  } else if (interrupted.value) {
+    reporter.blank();
+    reporter.warning('Interrupted \u2014 showing partial results');
   }
 
   // Show summary (uses filtered reports for display)
@@ -308,10 +319,12 @@ async function runSkills(
 
   // Run skills with Ink UI (TTY) or simple console output (non-TTY)
   const concurrency = options.parallel ?? DEFAULT_CONCURRENCY;
+  failFastController = options.failFast ? new AbortController() : undefined;
   const taskOptions = {
     mode: reporter.mode,
     verbosity: reporter.verbosity,
     concurrency,
+    failFastController,
   };
   const results = reporter.mode.isTTY
     ? await runSkillTasksWithInk(tasks, taskOptions)
@@ -320,7 +333,7 @@ async function runSkills(
   // Process results and output
   const totalDuration = Date.now() - startTime;
   const processed = processTaskResults(results, options.reportOn);
-  return outputResultsAndHandleFixes(processed, options, reporter, repoPath ?? cwd, totalDuration);
+  return outputResultsAndHandleFixes(processed, options, reporter, repoPath ?? cwd, totalDuration, failFastController?.signal.aborted);
 }
 
 /**
@@ -567,10 +580,12 @@ async function runConfigMode(options: CLIOptions, reporter: Reporter): Promise<n
 
   // Run triggers with Ink UI (TTY) or simple console output (non-TTY)
   const concurrency = options.parallel ?? config.runner?.concurrency ?? DEFAULT_CONCURRENCY;
+  failFastController = options.failFast ? new AbortController() : undefined;
   const taskOptions = {
     mode: reporter.mode,
     verbosity: reporter.verbosity,
     concurrency,
+    failFastController,
   };
   const results = reporter.mode.isTTY
     ? await runSkillTasksWithInk(tasks, taskOptions)
@@ -579,7 +594,7 @@ async function runConfigMode(options: CLIOptions, reporter: Reporter): Promise<n
   // Process results and output
   const totalDuration = Date.now() - startTime;
   const processed = processTaskResults(results, options.reportOn);
-  return outputResultsAndHandleFixes(processed, options, reporter, repoPath, totalDuration);
+  return outputResultsAndHandleFixes(processed, options, reporter, repoPath, totalDuration, failFastController?.signal.aborted);
 }
 
 /**

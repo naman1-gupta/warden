@@ -26,6 +26,8 @@ export {
   runSkillTask,
   runSkillTasks,
   createDefaultCallbacks,
+  composeTasksWithFailFast,
+  runComposedSkillTasks,
   type SkillTaskResult,
   type SkillTaskOptions,
   type RunTasksOptions,
