@@ -227,11 +227,15 @@ export async function runSkillTask(
         });
 
         // Build PR context for inclusion in prompts (if available)
+        // For non-PR contexts (CLI file/diff mode), skip the "Other Files" list to avoid
+        // bloating every hunk prompt with thousands of filenames.
+        const isPullRequest = context.pullRequest ? context.pullRequest.number !== 0 : false;
         const prContext: PRPromptContext | undefined = context.pullRequest
           ? {
-              changedFiles: context.pullRequest.files.map((f) => f.filename),
+              changedFiles: isPullRequest ? context.pullRequest.files.map((f) => f.filename) : [],
               title: context.pullRequest.title,
               body: context.pullRequest.body,
+              maxContextFiles: runnerOptions.maxContextFiles,
             }
           : undefined;
 
