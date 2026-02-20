@@ -7,7 +7,7 @@
 
 import type { Octokit } from '@octokit/rest';
 import type { EventContext, Finding } from '../../types/index.js';
-import { filterFindingsBySeverity } from '../../types/index.js';
+import { filterFindings } from '../../types/index.js';
 import { shouldFail } from '../../triggers/matcher.js';
 import type { RenderResult } from '../../output/types.js';
 import { renderSkillReport, renderFindingsBody } from '../../output/renderer.js';
@@ -164,8 +164,8 @@ export async function postTriggerReview(
     return { posted: false, newComments, shouldFail: false };
   }
 
-  // Filter findings by reportOn threshold
-  const filteredFindings = filterFindingsBySeverity(result.report.findings, result.reportOn);
+  // Filter findings by reportOn threshold and confidence
+  const filteredFindings = filterFindings(result.report.findings, result.reportOn, result.minConfidence);
   const reportOnSuccess = result.reportOnSuccess ?? false;
 
   // Skip if nothing to post
@@ -244,8 +244,10 @@ export async function postTriggerReview(
     }
 
     // Check if failOn threshold is met (even if all findings deduplicated, we still need REQUEST_CHANGES)
+    // Filter by confidence first so low-confidence findings don't trigger REQUEST_CHANGES
     const useRequestChanges = result.requestChanges ?? false;
-    const needsRequestChanges = useRequestChanges && result.failOn && shouldFail(result.report, result.failOn);
+    const reportForFail = { ...result.report, findings: filterFindings(result.report.findings, undefined, result.minConfidence) };
+    const needsRequestChanges = useRequestChanges && result.failOn && shouldFail(reportForFail, result.failOn);
 
     // Only post if we have non-duplicate findings, reportOnSuccess, or REQUEST_CHANGES needed
     if (findingsToPost.length > 0 || reportOnSuccess || needsRequestChanges) {
@@ -257,6 +259,7 @@ export async function postTriggerReview(
               {
                 maxFindings: result.maxFindings,
                 reportOn: result.reportOn,
+                minConfidence: result.minConfidence,
                 failOn: result.failOn,
                 requestChanges: result.requestChanges,
                 checkRunUrl: result.checkRunUrl,
