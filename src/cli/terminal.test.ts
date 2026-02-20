@@ -145,6 +145,49 @@ describe('renderTerminalReport', () => {
       expect(output).toContain('Test Finding');
       expect(output).toContain('This is a test finding');
     });
+
+    it('renders confidence badge after description in TTY mode', () => {
+      const report = createReport({
+        findings: [
+          createFinding({
+            confidence: 'high',
+            title: 'Finding with confidence',
+            description: 'This is the description',
+          }),
+        ],
+      });
+
+      const output = renderTerminalReport([report], {
+        isTTY: true,
+        supportsColor: false,
+        columns: 80,
+      });
+
+      expect(output).toContain('high confidence');
+      expect(output).toContain('Finding with confidence');
+      // Confidence should appear after the description, not on the title line
+      const lines = output.split('\n');
+      const titleLine = lines.findIndex((l) => l.includes('Finding with confidence'));
+      const confidenceLine = lines.findIndex((l) => l.includes('high confidence'));
+      const descriptionLine = lines.findIndex((l) => l.includes('This is the description'));
+      expect(confidenceLine).toBeGreaterThan(descriptionLine);
+      expect(confidenceLine).toBeGreaterThan(titleLine);
+    });
+
+    it('does not show confidence badge when not present', () => {
+      const report = createReport({
+        findings: [createFinding({ title: 'Finding without trust level' })],
+      });
+
+      const output = renderTerminalReport([report], {
+        isTTY: true,
+        supportsColor: false,
+        columns: 80,
+      });
+
+      expect(output).toContain('Finding without trust level');
+      expect(output).not.toContain('confidence');
+    });
   });
 
   describe('CI (non-TTY) rendering', () => {

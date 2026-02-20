@@ -9,6 +9,7 @@ import {
   padRight,
   formatStatsCompact,
   formatSeverityBadge,
+  formatConfidenceBadge,
 } from './formatters.js';
 import type { Severity, UsageStats, AuxiliaryUsageMap } from '../../types/index.js';
 
@@ -91,6 +92,19 @@ describe('formatSeverityBadge', () => {
     expect(formatSeverityBadge('info')).toContain('info');
   });
 });
+
+describe('formatConfidenceBadge', () => {
+  it('includes confidence text for each level', () => {
+    expect(formatConfidenceBadge('high')).toContain('high confidence');
+    expect(formatConfidenceBadge('medium')).toContain('medium confidence');
+    expect(formatConfidenceBadge('low')).toContain('low confidence');
+  });
+
+  it('returns empty string for undefined confidence', () => {
+    expect(formatConfidenceBadge(undefined)).toBe('');
+  });
+});
+
 
 describe('formatProgress', () => {
   it('formats progress indicator', () => {

@@ -5,7 +5,7 @@
 import chalk from 'chalk';
 import figures from 'figures';
 import type { Finding, SkillReport } from '../types/index.js';
-import { formatSeverityBadge, pluralize, type Reporter } from './output/index.js';
+import { formatSeverityBadge, formatConfidenceBadge, pluralize, type Reporter } from './output/index.js';
 import { ICON_CHECK } from './output/icons.js';
 import { Verbosity } from './output/verbosity.js';
 import { applyUnifiedDiff } from './diff-apply.js';
@@ -190,6 +190,12 @@ export async function runInteractiveFixFlow(
     // Fix description
     if (suggestedFix.description) {
       console.error(`  ${suggestedFix.description}`);
+    }
+
+    // Confidence
+    if (finding.confidence) {
+      console.error('');
+      console.error(`  ${formatConfidenceBadge(finding.confidence)}`);
     }
 
     console.error('');
