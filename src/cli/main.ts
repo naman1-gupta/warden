@@ -27,7 +27,8 @@ import {
   generateRunId,
   type SkillTaskOptions,
 } from './output/index.js';
-import { cleanupLogs } from './log-cleanup.js';
+import { cleanupArtifacts } from './log-cleanup.js';
+import { resolveSessionsDir } from '../sdk/session.js';
 import {
   collectFixableFindings,
   applyAllFixes,
@@ -192,9 +193,10 @@ async function outputResultsAndHandleFixes(
 
   // Always write repo-local JSONL log (non-fatal — don't lose analysis output)
   const logPath = getRepoLogPath(repoPath, runId, timestamp);
+  let logWritten = false;
   try {
     writeJsonlContent(logPath, jsonlContent);
-    reporter.debug(`Run log: ${logPath}`);
+    logWritten = true;
   } catch (err) {
     reporter.warning(`Failed to write run log: ${err instanceof Error ? err.message : String(err)}`);
   }
@@ -242,6 +244,11 @@ async function outputResultsAndHandleFixes(
   // Show summary (uses filtered reports for display)
   reporter.blank();
   reporter.renderSummary(filteredReports, totalDuration, { traceId });
+
+  // Show log file path after summary (only if write succeeded)
+  if (!options.json && logWritten) {
+    reporter.dim(`Log: ${logPath}`);
+  }
 
   // Handle fixes: --fix (automatic) always runs, interactive step-through in TTY mode
   if (fixableFindings.length > 0) {
@@ -363,6 +370,7 @@ async function runSkills(
     batchDelayMs: config?.defaults?.batchDelayMs,
     maxContextFiles: config?.defaults?.chunking?.maxContextFiles,
     auxiliaryMaxRetries: config?.defaults?.auxiliaryMaxRetries,
+    session: config?.sessions ?? { enabled: true },
   };
   const tasks: SkillTaskOptions[] = skillsToRun.map(({ skill, remote, filters }) => ({
     name: skill,
@@ -644,6 +652,7 @@ async function runConfigMode(options: CLIOptions, reporter: Reporter): Promise<n
       maxTurns: trigger.maxTurns,
       maxContextFiles: config.defaults?.chunking?.maxContextFiles,
       auxiliaryMaxRetries: config.defaults?.auxiliaryMaxRetries,
+      session: config.sessions ?? { enabled: true },
     },
   }));
 
@@ -819,20 +828,28 @@ export async function main(): Promise<void> {
     },
   );
 
-  // Run log cleanup after all output is complete (covers all exit paths)
+  // Run log and session cleanup after all output is complete (covers all exit paths)
   try {
-    let logsRoot: string;
+    let cleanupRoot: string;
     try {
-      logsRoot = getRepoRoot(cwd);
+      cleanupRoot = getRepoRoot(cwd);
     } catch {
-      logsRoot = cwd;
+      cleanupRoot = cwd;
     }
-    const cfgPath = resolve(logsRoot, 'warden.toml');
-    const logsConfig = existsSync(cfgPath) ? loadWardenConfig(dirname(cfgPath)).logs : undefined;
-    await cleanupLogs({
-      logsDir: join(logsRoot, '.warden', 'logs'),
-      retentionDays: logsConfig?.retentionDays ?? 30,
-      mode: logsConfig?.cleanup ?? 'ask',
+    const cfgPath = resolve(cleanupRoot, 'warden.toml');
+    const cfg = existsSync(cfgPath) ? loadWardenConfig(dirname(cfgPath)) : undefined;
+    await cleanupArtifacts({
+      dir: join(cleanupRoot, '.warden', 'logs'),
+      retentionDays: cfg?.logs?.retentionDays ?? 30,
+      mode: cfg?.logs?.cleanup ?? 'ask',
+      isTTY: reporter.mode.isTTY,
+      reporter,
+    });
+    // Session cleanup mirrors log cleanup
+    await cleanupArtifacts({
+      dir: resolveSessionsDir(cleanupRoot, cfg?.sessions?.directory),
+      retentionDays: cfg?.sessions?.retentionDays ?? 7,
+      mode: cfg?.sessions?.cleanup ?? 'auto',
       isTTY: reporter.mode.isTTY,
       reporter,
     });

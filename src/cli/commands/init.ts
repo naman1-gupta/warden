@@ -144,20 +144,28 @@ export async function runInit(options: CLIOptions, reporter: Reporter): Promise<
     filesCreated++;
   }
 
-  // Ensure .warden/logs/ is in .gitignore
+  // Ensure .warden/ is in .gitignore (migrating old .warden/logs/ entries)
   const gitignorePath = join(repoRoot, '.gitignore');
   if (existsSync(gitignorePath)) {
     const gitignoreContent = readFileSync(gitignorePath, 'utf-8');
-    const hasEntry = gitignoreContent.split('\n').some((line) => line.trim() === '.warden/logs/');
-    if (!hasEntry) {
-      const newline = gitignoreContent.endsWith('\n') ? '' : '\n';
-      writeFileSync(gitignorePath, gitignoreContent + newline + '.warden/logs/\n', 'utf-8');
-      reporter.created('.gitignore entry for .warden/logs/');
+    const lines = gitignoreContent.split('\n');
+    const hasWardenEntry = lines.some((line) => {
+      const trimmed = line.trim();
+      return trimmed === '.warden/' || trimmed === '.warden';
+    });
+    if (!hasWardenEntry) {
+      // Remove old specific entries that are superseded by .warden/
+      const oldPatterns = new Set(['.warden/logs/', '.warden/logs', '.warden/sessions/', '.warden/sessions']);
+      const cleaned = lines.filter((line) => !oldPatterns.has(line.trim()));
+      const cleanedContent = cleaned.join('\n');
+      const newline = cleanedContent.endsWith('\n') ? '' : '\n';
+      writeFileSync(gitignorePath, cleanedContent + newline + '.warden/\n', 'utf-8');
+      reporter.created('.gitignore entry for .warden/');
       filesCreated++;
     }
   } else {
-    writeFileSync(gitignorePath, '.warden/logs/\n', 'utf-8');
-    reporter.created('.gitignore with .warden/logs/');
+    writeFileSync(gitignorePath, '.warden/\n', 'utf-8');
+    reporter.created('.gitignore with .warden/');
     filesCreated++;
   }
 
