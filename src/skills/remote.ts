@@ -13,6 +13,7 @@ const DEFAULT_TTL_SECONDS = 86400;
 const RemoteEntrySchema = z.object({
   sha: z.string(),
   fetchedAt: z.string().datetime(),
+  cloneUrl: z.string().optional(),
 });
 
 /** Schema for the entire state.json file */
@@ -46,6 +47,8 @@ export interface ParsedRemoteRef {
   owner: string;
   repo: string;
   sha?: string;
+  /** Original clone URL when a full URL was provided (SSH or HTTPS). Undefined for owner/repo shorthand. */
+  cloneUrl?: string;
 }
 
 /**
@@ -113,8 +116,12 @@ export function parseRemoteRef(ref: string): ParsedRemoteRef {
     }
   }
 
-  // Normalize GitHub URLs to owner/repo format
-  const repoPath = normalizeGitHubUrl(inputRef) ?? inputRef;
+  // Normalize GitHub URLs to owner/repo format.
+  // When the input is a full URL, preserve it as cloneUrl for fetchRemote.
+  const normalized = normalizeGitHubUrl(inputRef);
+  // Upgrade http:// to https:// to prevent cloning over plain HTTP
+  const cloneUrl = normalized ? inputRef.replace(/^http:\/\//i, 'https://') : undefined;
+  const repoPath = normalized ?? inputRef;
 
   const slashIndex = repoPath.indexOf('/');
   if (slashIndex === -1) {
@@ -153,7 +160,7 @@ export function parseRemoteRef(ref: string): ParsedRemoteRef {
     throw new SkillLoaderError(`Invalid remote ref: ${ref} (repo contains invalid characters)`);
   }
 
-  return { owner, repo, sha };
+  return { owner, repo, sha, cloneUrl };
 }
 
 /**
@@ -270,7 +277,7 @@ export function shouldRefresh(ref: string, state: RemoteState): boolean {
     return false;
   }
 
-  const entry = state.remotes[ref];
+  const entry = state.remotes[formatRemoteRef(parsed)];
   if (!entry) {
     return true; // Not cached, needs fetch
   }
@@ -315,12 +322,15 @@ export async function fetchRemote(ref: string, options: FetchRemoteOptions = {})
   const remotePath = getRemotePath(ref);
   const state = loadState();
 
+  // Normalize state key so different URL forms (SSH, HTTPS, shorthand) share one entry
+  const stateKey = formatRemoteRef(parsed);
+
   const isPinned = !!parsed.sha;
   const isCached = existsSync(remotePath);
   const needsRefresh = shouldRefresh(ref, state);
 
   // Check if we have a valid cache (directory exists AND state entry exists)
-  const stateEntry = state.remotes[ref];
+  const stateEntry = state.remotes[stateKey];
   const hasValidCache = isCached && !!stateEntry;
 
   // Handle offline mode
@@ -341,7 +351,8 @@ export async function fetchRemote(ref: string, options: FetchRemoteOptions = {})
     return stateEntry.sha;
   }
 
-  const repoUrl = `https://github.com/${parsed.owner}/${parsed.repo}.git`;
+  // Use the original clone URL if provided, fall back to stored URL from state, then HTTPS
+  const repoUrl = parsed.cloneUrl ?? stateEntry?.cloneUrl ?? `https://github.com/${parsed.owner}/${parsed.repo}.git`;
 
   // Clone or update
   if (!isCached) {
@@ -353,26 +364,36 @@ export async function fetchRemote(ref: string, options: FetchRemoteOptions = {})
       mkdirSync(parentDir, { recursive: true });
     }
 
-    // Clone with minimal depth for unpinned refs
-    // Note: '--' separates flags from positional args to prevent flag injection
-    if (isPinned && parsed.sha) {
-      // For pinned refs, we need full history to checkout the specific SHA
-      // Use a shallow clone then deepen if needed
-      execGit(['clone', '--depth=1', '--', repoUrl, remotePath]);
+    try {
+      // Note: '--' separates flags from positional args to prevent flag injection
+      const { sha } = parsed;
+      if (sha) {
+        // For pinned refs, shallow clone then checkout the specific SHA
+        execGit(['clone', '--depth=1', '--', repoUrl, remotePath]);
 
-      try {
-        // Try to checkout the pinned SHA
-        // Note: 'checkout' without '--' treats arg as ref; with '--' it's a file path
-        execGit(['fetch', '--depth=1', 'origin', '--', parsed.sha], { cwd: remotePath });
-        execGit(['checkout', parsed.sha], { cwd: remotePath });
-      } catch {
-        // If SHA not found, do a full fetch and retry
-        execGit(['fetch', '--unshallow'], { cwd: remotePath });
-        execGit(['checkout', parsed.sha], { cwd: remotePath });
+        try {
+          // Try to fetch the pinned SHA directly
+          execGit(['fetch', '--depth=1', 'origin', '--', sha], { cwd: remotePath });
+          execGit(['checkout', sha], { cwd: remotePath });
+        } catch {
+          // If SHA not found in shallow history, do a full fetch and retry
+          execGit(['fetch', '--unshallow'], { cwd: remotePath });
+          execGit(['checkout', sha], { cwd: remotePath });
+        }
+      } else {
+        // For unpinned refs, shallow clone of default branch
+        execGit(['clone', '--depth=1', '--', repoUrl, remotePath]);
       }
-    } else if (!isPinned) {
-      // For unpinned refs, shallow clone of default branch
-      execGit(['clone', '--depth=1', '--', repoUrl, remotePath]);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      // Detect HTTPS auth failures and suggest SSH URL
+      if (!parsed.cloneUrl && (message.includes('terminal prompts disabled') || message.includes('could not read Username'))) {
+        throw new SkillLoaderError(
+          `Failed to clone ${stateKey} via HTTPS. ` +
+          `For private repos, use the SSH URL: warden add --remote git@github.com:${parsed.owner}/${parsed.repo}.git`
+        );
+      }
+      throw error;
     }
   } else {
     // Update existing cache
@@ -389,10 +410,12 @@ export async function fetchRemote(ref: string, options: FetchRemoteOptions = {})
   // Get the current HEAD SHA
   const sha = execGit(['rev-parse', 'HEAD'], { cwd: remotePath });
 
-  // Update state
-  state.remotes[ref] = {
+  // Update state with normalized key — preserve cloneUrl for future re-clones
+  const cloneUrl = parsed.cloneUrl ?? stateEntry?.cloneUrl;
+  state.remotes[stateKey] = {
     sha,
     fetchedAt: new Date().toISOString(),
+    ...(cloneUrl ? { cloneUrl } : {}),
   };
   saveState(state);
 
@@ -631,8 +654,9 @@ export function removeRemote(ref: string): void {
     rmSync(remotePath, { recursive: true, force: true });
   }
 
+  const stateKey = formatRemoteRef(parseRemoteRef(ref));
   const state = loadState();
-  const { [ref]: _removed, ...remainingRemotes } = state.remotes;
+  const { [stateKey]: _removed, ...remainingRemotes } = state.remotes;
   state.remotes = remainingRemotes;
   saveState(state);
 }

@@ -138,6 +138,7 @@ describe('parseRemoteRef', () => {
       owner: 'getsentry',
       repo: 'skills',
       sha: undefined,
+      cloneUrl: 'https://github.com/getsentry/skills',
     });
   });
 
@@ -147,6 +148,7 @@ describe('parseRemoteRef', () => {
       owner: 'getsentry',
       repo: 'skills',
       sha: undefined,
+      cloneUrl: 'https://github.com/getsentry/skills.git',
     });
   });
 
@@ -156,6 +158,7 @@ describe('parseRemoteRef', () => {
       owner: 'getsentry',
       repo: 'skills',
       sha: 'abc123',
+      cloneUrl: 'https://github.com/getsentry/skills',
     });
   });
 
@@ -165,6 +168,7 @@ describe('parseRemoteRef', () => {
       owner: 'getsentry',
       repo: 'skills',
       sha: 'abc123',
+      cloneUrl: 'https://github.com/getsentry/skills.git',
     });
   });
 
@@ -174,6 +178,7 @@ describe('parseRemoteRef', () => {
       owner: 'getsentry',
       repo: 'skills',
       sha: undefined,
+      cloneUrl: 'git@github.com:getsentry/skills.git',
     });
   });
 
@@ -183,6 +188,7 @@ describe('parseRemoteRef', () => {
       owner: 'getsentry',
       repo: 'skills',
       sha: 'abc123',
+      cloneUrl: 'git@github.com:getsentry/skills.git',
     });
   });
 
@@ -192,8 +198,10 @@ describe('parseRemoteRef', () => {
       owner: 'getsentry',
       repo: 'skills',
       sha: undefined,
+      cloneUrl: 'https://github.com/getsentry/skills',
     });
   });
+
 });
 
 describe('formatRemoteRef', () => {
