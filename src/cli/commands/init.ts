@@ -1,5 +1,16 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import {
+  cpSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import { dirname, join, relative } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import chalk from 'chalk';
 import { getRepoRoot, getGitHubRepoUrl } from '../git.js';
 import type { Reporter } from '../output/reporter.js';
@@ -92,8 +103,109 @@ function checkExistingFiles(repoRoot: string): {
   };
 }
 
-export interface InitOptions {
-  force: boolean;
+/**
+ * Resolve the warden package root directory from the compiled/source location.
+ * Works from both src/cli/commands/init.ts and dist/cli/commands/init.js (3 levels up).
+ */
+function resolvePackageRoot(): string {
+  const __filename = fileURLToPath(import.meta.url);
+  return join(dirname(__filename), '..', '..', '..');
+}
+
+/**
+ * Resolve the bundled skills directory shipped with the warden package.
+ * Returns null if the directory doesn't exist (e.g., running from a non-standard location).
+ */
+function resolveBundledSkillsDir(): string | null {
+  const dir = join(resolvePackageRoot(), 'skills');
+  return existsSync(dir) ? dir : null;
+}
+
+/**
+ * Install bundled skills into .agents/skills/.
+ * Skips skills that already exist unless force is true.
+ */
+function installBundledSkills(
+  repoRoot: string,
+  force: boolean,
+  reporter: Reporter,
+): number {
+  const bundledDir = resolveBundledSkillsDir();
+  if (!bundledDir) {
+    return 0;
+  }
+
+  const targetDir = join(repoRoot, '.agents', 'skills');
+  mkdirSync(targetDir, { recursive: true });
+
+  let installed = 0;
+  const entries = readdirSync(bundledDir, { withFileTypes: true });
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+
+    const skillName = entry.name;
+
+    const src = join(bundledDir, skillName);
+    const dest = join(targetDir, skillName);
+
+    // Check if destination exists (as file, dir, or symlink)
+    let destExists = false;
+    try {
+      lstatSync(dest);
+      destExists = true;
+    } catch {
+      // doesn't exist
+    }
+
+    if (destExists && !force) {
+      reporter.skipped(`.agents/skills/${skillName}`, 'already installed');
+      continue;
+    }
+
+    // Remove first to handle symlinks cleanly (cpSync would follow them)
+    if (destExists) {
+      rmSync(dest, { recursive: true, force: true });
+    }
+
+    cpSync(src, dest, { recursive: true });
+    reporter.created(`.agents/skills/${skillName}`);
+    installed++;
+  }
+
+  return installed;
+}
+
+/**
+ * Ensure .claude/skills symlink points to ../.agents/skills if .claude/ exists.
+ */
+function ensureClaudeSymlink(repoRoot: string, force: boolean, reporter: Reporter): boolean {
+  const claudeDir = join(repoRoot, '.claude');
+  if (!existsSync(claudeDir)) return false;
+
+  const skillsLink = join(claudeDir, 'skills');
+
+  // Check if it already exists (file, dir, or symlink — including broken symlinks)
+  let linkExists = false;
+  try {
+    lstatSync(skillsLink);
+    linkExists = true;
+  } catch {
+    // Doesn't exist
+  }
+
+  if (linkExists && !force) {
+    reporter.skipped('.claude/skills', 'already exists');
+    return false;
+  }
+
+  if (linkExists) {
+    rmSync(skillsLink, { recursive: true, force: true });
+  }
+
+  symlinkSync('../.agents/skills', skillsLink);
+  reporter.created('.claude/skills -> ../.agents/skills');
+  return true;
 }
 
 /**
@@ -166,6 +278,14 @@ export async function runInit(options: CLIOptions, reporter: Reporter): Promise<
   } else {
     writeFileSync(gitignorePath, '.warden/\n', 'utf-8');
     reporter.created('.gitignore with .warden/');
+    filesCreated++;
+  }
+
+  // Install bundled skills into .agents/skills/
+  filesCreated += installBundledSkills(repoRoot, options.force, reporter);
+
+  // Symlink .claude/skills -> ../.agents/skills if .claude/ directory exists
+  if (ensureClaudeSymlink(repoRoot, options.force, reporter)) {
     filesCreated++;
   }
 
