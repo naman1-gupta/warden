@@ -7,12 +7,16 @@ import {
   FindingSchema,
   SkippedFileSchema,
   AuxiliaryUsageMapSchema,
-  SeveritySchema,
   FixStatusSchema,
 } from '../../types/index.js';
 import type { SkillReport, UsageStats, AuxiliaryUsageMap } from '../../types/index.js';
 import { mergeAuxiliaryUsage } from '../../sdk/usage.js';
 import { countBySeverity } from './formatters.js';
+
+/**
+ * Sentinel value recorded in JSONL metadata when no model is explicitly configured.
+ */
+export const MODEL_DEFAULT_SENTINEL = '(default)';
 
 /**
  * Generate a unique run ID for this execution.
@@ -52,6 +56,8 @@ export const JsonlRunMetadataSchema = z.object({
   cwd: z.string(),
   runId: z.string(),
   traceId: z.string().optional(),
+  model: z.string().optional(),
+  headSha: z.string().optional(),
 });
 export type JsonlRunMetadata = z.infer<typeof JsonlRunMetadataSchema>;
 
@@ -71,6 +77,7 @@ export const JsonlRecordSchema = z.object({
   summary: z.string(),
   findings: z.array(FindingSchema),
   metadata: z.record(z.string(), z.unknown()).optional(),
+  model: z.string().optional(),
   durationMs: z.number().nonnegative().optional(),
   usage: UsageStatsSchema.optional(),
   auxiliaryUsage: AuxiliaryUsageMapSchema.optional(),
@@ -81,8 +88,23 @@ export const JsonlRecordSchema = z.object({
 });
 export type JsonlRecord = z.infer<typeof JsonlRecordSchema>;
 
-/** Severity breakdown in the summary record. */
-const BySeveritySchema = z.record(SeveritySchema, z.number().int().nonnegative());
+/**
+ * Severity breakdown in the summary record.
+ * Uses a transform to normalize legacy keys ('critical' → 'high', 'info' → 'low')
+ * so old JSONL logs parse correctly. Accepts any string keys to handle old 5-level logs.
+ */
+const BySeveritySchema = z.record(z.string(), z.number().int().nonnegative()).transform(
+  (obj) => {
+    const result: Record<string, number> = {};
+    for (const [key, value] of Object.entries(obj)) {
+      const normalized = key === 'critical' ? 'high' : key === 'info' ? 'low' : key;
+      if (normalized === 'high' || normalized === 'medium' || normalized === 'low') {
+        result[normalized] = (result[normalized] ?? 0) + value;
+      }
+    }
+    return result as Record<'high' | 'medium' | 'low', number>;
+  },
+);
 
 /** Aggregate summary across all skills (always the last JSONL line). */
 export const JsonlSummaryRecordSchema = z.object({
@@ -146,10 +168,10 @@ function aggregateUsage(reports: SkillReport[]): UsageStats | undefined {
 export function renderJsonlString(
   reports: SkillReport[],
   durationMs: number,
-  options?: { runId?: string; traceId?: string; timestamp?: Date }
+  options?: { runId?: string; traceId?: string; timestamp?: Date; model?: string; headSha?: string; cwd?: string }
 ): string {
   const timestamp = (options?.timestamp ?? new Date()).toISOString();
-  const cwd = process.cwd();
+  const cwd = options?.cwd ?? process.cwd();
 
   const runMetadata: JsonlRunMetadata = {
     timestamp,
@@ -157,6 +179,8 @@ export function renderJsonlString(
     cwd,
     runId: options?.runId ?? generateRunId(),
     traceId: options?.traceId,
+    model: options?.model,
+    headSha: options?.headSha,
   };
 
   const lines: string[] = [];
@@ -168,6 +192,7 @@ export function renderJsonlString(
       summary: report.summary,
       findings: report.findings,
       metadata: report.metadata,
+      model: report.model,
       durationMs: report.durationMs,
       usage: report.usage,
       auxiliaryUsage: report.auxiliaryUsage,
@@ -233,4 +258,141 @@ export function writeJsonlContent(outputPath: string, content: string): void {
  */
 export function readJsonlLog(logPath: string): string {
   return readFileSync(logPath, 'utf-8');
+}
+
+/**
+ * Parse JSONL content and reconstruct SkillReport objects.
+ * Returns an object with the reports array, run metadata from the summary,
+ * and total duration.
+ */
+export interface ParsedJsonlLog {
+  reports: SkillReport[];
+  runMetadata?: JsonlRunMetadata;
+  totalDurationMs: number;
+}
+
+export function parseJsonlReports(content: string): ParsedJsonlLog {
+  const lines = content.trim().split('\n').filter((line) => line.trim());
+  const reports: SkillReport[] = [];
+  let runMetadata: JsonlRunMetadata | undefined;
+  let totalDurationMs = 0;
+
+  for (const line of lines) {
+    try {
+      const parsed = JSON.parse(line);
+
+      // Skip summary record (but capture metadata from it)
+      if (parsed.type === 'summary') {
+        const summary = JsonlSummaryRecordSchema.parse(parsed);
+        runMetadata = summary.run;
+        totalDurationMs = summary.run.durationMs;
+        continue;
+      }
+
+      // Parse skill record and convert to SkillReport
+      const record = JsonlRecordSchema.parse(parsed);
+      reports.push({
+        skill: record.skill,
+        summary: record.summary,
+        findings: record.findings,
+        metadata: record.metadata,
+        model: record.model,
+        durationMs: record.durationMs,
+        usage: record.usage,
+        auxiliaryUsage: record.auxiliaryUsage,
+        skippedFiles: record.skippedFiles,
+        failedHunks: record.failedHunks,
+        failedExtractions: record.failedExtractions,
+        files: record.files?.map((f) => ({
+          filename: f.filename,
+          findingCount: f.findings,
+          durationMs: f.durationMs,
+          usage: f.usage,
+        })),
+      });
+
+      // Capture run metadata from first record if no summary yet
+      if (!runMetadata) {
+        runMetadata = record.run;
+        totalDurationMs = record.run.durationMs;
+      }
+    } catch {
+      // Skip invalid lines
+    }
+  }
+
+  return { reports, runMetadata, totalDurationMs };
+}
+
+/**
+ * Lightweight metadata extracted from a JSONL log file.
+ * Includes the summary record plus skill names from the skill records.
+ */
+export interface LogFileMetadata {
+  summary: JsonlSummaryRecord;
+  skills: string[];
+  model?: string;
+  headSha?: string;
+  totalFiles: number;
+}
+
+/**
+ * Parse a JSONL log file for its summary and skill names.
+ * Reads all lines but only fully parses the summary; extracts skill names
+ * from non-summary lines with minimal parsing.
+ */
+export function parseLogMetadata(filePath: string): LogFileMetadata | undefined {
+  try {
+    const content = readFileSync(filePath, 'utf-8');
+    const lines = content.trim().split('\n');
+
+    let summary: JsonlSummaryRecord | undefined;
+    const skills: string[] = [];
+    let model: string | undefined;
+    let headSha: string | undefined;
+    const uniqueFiles = new Set<string>();
+
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      try {
+        const parsed = JSON.parse(line);
+        if (parsed.type === 'summary') {
+          summary = JsonlSummaryRecordSchema.parse(parsed);
+          // Fall back to summary's run metadata for model/headSha (empty runs have no skill records)
+          if (!model && parsed.run?.model && typeof parsed.run.model === 'string') {
+            model = parsed.run.model;
+          }
+          if (!headSha && parsed.run?.headSha && typeof parsed.run.headSha === 'string') {
+            headSha = parsed.run.headSha;
+          }
+        } else if (parsed.skill && typeof parsed.skill === 'string') {
+          if (!skills.includes(parsed.skill)) {
+            skills.push(parsed.skill);
+          }
+          // Extract model and headSha from first record's run metadata
+          if (!model && parsed.run?.model && typeof parsed.run.model === 'string') {
+            model = parsed.run.model;
+          }
+          if (!headSha && parsed.run?.headSha && typeof parsed.run.headSha === 'string') {
+            headSha = parsed.run.headSha;
+          }
+          // Count unique filenames across skill records' files arrays
+          if (Array.isArray(parsed.files)) {
+            for (const f of parsed.files) {
+              if (f && typeof f.filename === 'string') {
+                uniqueFiles.add(f.filename);
+              }
+            }
+          }
+        }
+      } catch {
+        // Skip unparseable lines
+      }
+    }
+
+    if (!summary) return undefined;
+    return { summary, skills, model, headSha, totalFiles: uniqueFiles.size };
+  } catch {
+    return undefined;
+  }
 }

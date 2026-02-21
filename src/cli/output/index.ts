@@ -41,10 +41,17 @@ export { BoxRenderer, type BoxOptions } from './box.js';
 export {
   writeJsonlReport,
   writeJsonlContent,
+  MODEL_DEFAULT_SENTINEL,
   renderJsonlString,
   getRepoLogPath,
   generateRunId,
+  shortRunId,
+  parseJsonlReports,
+  parseLogMetadata,
   type JsonlRecord,
   type JsonlRunMetadata,
+  type JsonlSummaryRecord,
+  type ParsedJsonlLog,
+  type LogFileMetadata,
 } from './jsonl.js';
 export { ICON_CHECK, ICON_SKIPPED, SPINNER_FRAMES } from './icons.js';

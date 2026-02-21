@@ -706,11 +706,9 @@ export function generateSummary(skillName: string, findings: Finding[]): string 
   }
 
   const parts: string[] = [];
-  if (counts['critical']) parts.push(`${counts['critical']} critical`);
   if (counts['high']) parts.push(`${counts['high']} high`);
   if (counts['medium']) parts.push(`${counts['medium']} medium`);
   if (counts['low']) parts.push(`${counts['low']} low`);
-  if (counts['info']) parts.push(`${counts['info']} info`);
 
   return `${skillName}: Found ${findings.length} issue${findings.length === 1 ? '' : 's'} (${parts.join(', ')})`;
 }
@@ -743,6 +741,7 @@ export async function runSkill(
       findings: [],
       usage: emptyUsage(),
       durationMs: Date.now() - startTime,
+      model: options.model,
     };
     if (skippedFiles.length > 0) {
       report.skippedFiles = skippedFiles;
@@ -936,6 +935,7 @@ export async function runSkill(
     findings: mergedFindings,
     usage: totalUsage,
     durationMs: Date.now() - startTime,
+    model: options.model,
     files: fileResults.map((fr) => ({
       filename: fr.filename,
       findingCount: fr.result.findings.length,

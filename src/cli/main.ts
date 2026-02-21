@@ -11,7 +11,7 @@ import { filterFindings } from '../types/index.js';
 import { DEFAULT_CONCURRENCY, getAnthropicApiKey } from '../utils/index.js';
 import { parseCliArgs, showHelp, showVersion, classifyTargets, type CLIOptions } from './args.js';
 import { buildLocalEventContext, buildFileEventContext } from './context.js';
-import { getRepoRoot, refExists, hasUncommittedChanges } from './git.js';
+import { getRepoRoot, getHeadSha, refExists, hasUncommittedChanges } from './git.js';
 import { renderTerminalReport, filterReports } from './terminal.js';
 import {
   Reporter,
@@ -21,6 +21,7 @@ import {
   runSkillTasks,
   runSkillTasksWithInk,
   pluralize,
+  MODEL_DEFAULT_SENTINEL,
   writeJsonlContent,
   renderJsonlString,
   getRepoLogPath,
@@ -39,6 +40,7 @@ import { runInit } from './commands/init.js';
 import { runAdd } from './commands/add.js';
 import { runSetupApp } from './commands/setup-app.js';
 import { runSync } from './commands/sync.js';
+import { runLogs } from './commands/logs.js';
 
 /**
  * Global abort controller for graceful shutdown on SIGINT.
@@ -107,7 +109,13 @@ function writeEmptyRunLog(
   const runId = generateRunId();
   const timestamp = new Date();
   const logPath = getRepoLogPath(repoPath, runId, timestamp);
-  const content = renderJsonlString([], 0, { runId, traceId: opts?.traceId, timestamp });
+  let headSha: string | undefined;
+  try {
+    headSha = getHeadSha(repoPath);
+  } catch {
+    // Not in a git repo or HEAD is unborn
+  }
+  const content = renderJsonlString([], 0, { runId, traceId: opts?.traceId, timestamp, headSha });
   try {
     writeJsonlContent(logPath, content);
   } catch (err) {
@@ -181,6 +189,7 @@ async function outputResultsAndHandleFixes(
   repoPath: string,
   totalDuration: number,
   failFastAborted?: boolean,
+  resolvedModel?: string,
 ): Promise<number> {
   const { reports, filteredReports, hasFailure, failureReasons } = processed;
 
@@ -188,8 +197,16 @@ async function outputResultsAndHandleFixes(
   const runId = generateRunId();
   const timestamp = new Date();
 
+  // Capture HEAD SHA safely (non-fatal if not in a git repo)
+  let headSha: string | undefined;
+  try {
+    headSha = getHeadSha(repoPath);
+  } catch {
+    // Not in a git repo or HEAD is unborn
+  }
+
   // Render JSONL content once so repo log and --output have identical timestamps
-  const jsonlContent = renderJsonlString(reports, totalDuration, { runId, traceId, timestamp });
+  const jsonlContent = renderJsonlString(reports, totalDuration, { runId, traceId, timestamp, model: resolvedModel, headSha });
 
   // Always write repo-local JSONL log (non-fatal — don't lose analysis output)
   const logPath = getRepoLogPath(repoPath, runId, timestamp);
@@ -361,10 +378,13 @@ async function runSkills(
 
   // Build skill tasks
   // Model precedence: defaults.model > CLI flag > WARDEN_MODEL env var > SDK default
-  const model = config?.defaults?.model ?? options.model ?? process.env['WARDEN_MODEL'];
+  // sdkModel is undefined when no model is explicitly configured (lets SDK use its default).
+  // logModel records what was used for JSONL logs (sentinel when no explicit model).
+  const sdkModel = config?.defaults?.model ?? options.model ?? process.env['WARDEN_MODEL'];
+  const logModel = sdkModel ?? MODEL_DEFAULT_SENTINEL;
   const runnerOptions: SkillRunnerOptions = {
     apiKey,
-    model,
+    model: sdkModel,
     abortController,
     maxTurns: config?.defaults?.maxTurns,
     batchDelayMs: config?.defaults?.batchDelayMs,
@@ -400,7 +420,7 @@ async function runSkills(
   const totalDuration = Date.now() - startTime;
   const effectiveMinConfidence = options.minConfidence ?? config?.defaults?.minConfidence ?? 'medium';
   const processed = processTaskResults(results, options.reportOn, effectiveMinConfidence);
-  return outputResultsAndHandleFixes(processed, options, reporter, repoPath ?? cwd, totalDuration, failFastController?.signal.aborted);
+  return outputResultsAndHandleFixes(processed, options, reporter, repoPath ?? cwd, totalDuration, failFastController?.signal.aborted, logModel);
 }
 
 /**
@@ -672,7 +692,9 @@ async function runConfigMode(options: CLIOptions, reporter: Reporter): Promise<n
   // Process results and output
   const totalDuration = Date.now() - startTime;
   const processed = processTaskResults(results, options.reportOn, effectiveMinConfidence);
-  return outputResultsAndHandleFixes(processed, options, reporter, repoPath, totalDuration, failFastController?.signal.aborted);
+  // Run-level model is the default (ignoring per-trigger overrides); per-skill models are on each report.
+  const defaultModel = config.defaults?.model ?? options.model ?? process.env['WARDEN_MODEL'] ?? MODEL_DEFAULT_SENTINEL;
+  return outputResultsAndHandleFixes(processed, options, reporter, repoPath, totalDuration, failFastController?.signal.aborted, defaultModel);
 }
 
 /**
@@ -768,7 +790,7 @@ async function runCommand(options: CLIOptions, reporter: Reporter): Promise<numb
 }
 
 export async function main(): Promise<void> {
-  const { command, options, setupAppOptions } = parseCliArgs();
+  const { command, options, setupAppOptions, logsOptions } = parseCliArgs();
 
   if (command === 'help') {
     showHelp();
@@ -822,6 +844,12 @@ export async function main(): Promise<void> {
           return runSetupApp(setupAppOptions, reporter);
         case 'sync':
           return runSync(options, reporter);
+        case 'logs':
+          if (!logsOptions) {
+            reporter.error('Missing logs options');
+            process.exit(1);
+          }
+          return runLogs(logsOptions, options, reporter);
         default:
           return runCommand(options, reporter);
       }

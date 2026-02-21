@@ -55,10 +55,18 @@ export interface SetupAppOptions {
   open: boolean;
 }
 
+export type LogsSubcommand = 'list' | 'show' | 'gc';
+
+export interface LogsOptions {
+  subcommand: LogsSubcommand;
+  files: string[];
+}
+
 export interface ParsedArgs {
-  command: 'run' | 'help' | 'init' | 'add' | 'version' | 'setup-app' | 'sync';
+  command: 'run' | 'help' | 'init' | 'add' | 'version' | 'setup-app' | 'sync' | 'logs';
   options: CLIOptions;
   setupAppOptions?: SetupAppOptions;
+  logsOptions?: LogsOptions;
 }
 
 export function showVersion(): void {
@@ -75,6 +83,9 @@ Commands:
   add [skill]          Add a skill trigger to warden.toml
   sync [remote]        Update cached remote skills to latest
   setup-app            Create a GitHub App for Warden via manifest flow
+  logs [list]          List saved run logs (default)
+  logs show <files...> Show results from JSONL log files
+  logs gc              Remove expired log files
   (default)            Run analysis on targets or using warden.toml triggers
 
 Targets:
@@ -313,7 +324,7 @@ export function parseCliArgs(argv: string[] = process.argv.slice(2)): ParsedArgs
   }
 
   // Filter out known commands from positionals
-  const commands = ['run', 'help', 'init', 'add', 'version', 'setup-app', 'sync'];
+  const commands = ['run', 'help', 'init', 'add', 'version', 'setup-app', 'sync', 'logs'];
   const targets = positionals.filter((p) => !commands.includes(p));
 
   // Handle explicit help command
@@ -393,6 +404,49 @@ export function parseCliArgs(argv: string[] = process.argv.slice(2)): ParsedArgs
         timeout: values.timeout ? parseInt(values.timeout as string, 10) : 300,
         name: values.name as string | undefined,
         open: !values['no-open'],
+      },
+    };
+  }
+
+  // Handle logs command group
+  if (positionals.includes('logs')) {
+    const logsIndex = positionals.indexOf('logs');
+    const subArgs = positionals.slice(logsIndex + 1);
+    const subcommandArg = subArgs[0];
+
+    let files: string[] = [];
+
+    // Determine subcommand: explicit keyword, or infer 'show' if arg is not a known subcommand
+    let subcommand: LogsSubcommand;
+    if (subcommandArg === 'list' || subcommandArg === 'show' || subcommandArg === 'gc') {
+      subcommand = subcommandArg;
+    } else if (subcommandArg) {
+      // Non-keyword arg (file path, run ID, etc.) — infer 'show'
+      subcommand = 'show';
+      files = subArgs;
+    } else {
+      subcommand = 'list';
+    }
+
+    if (subcommand === 'show' && files.length === 0) {
+      files = subArgs.slice(1);
+    }
+
+    return {
+      command: 'logs',
+      options: CLIOptionsSchema.parse({
+        json: values.json,
+        reportOn: values['report-on'] as SeverityThreshold | undefined,
+        minConfidence: values['min-confidence'] as ConfidenceThreshold | undefined,
+        quiet: values.quiet,
+        verbose: verboseCount,
+        debug: values.debug,
+        log: values.log,
+        color: resolveColorOption(values),
+      }),
+      logsOptions: {
+        subcommand,
+        files,
       },
     };
   }
