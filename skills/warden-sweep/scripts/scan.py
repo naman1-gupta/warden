@@ -288,19 +288,22 @@ def log_path_for_file(sweep_dir: str, file_path: str) -> str:
 
 
 def scan_file(
-    file_path: str, log_file: str, timeout: int = 600
+    file_path: str, log_file: str, timeout: int = 600, skill: str | None = None
 ) -> dict[str, Any]:
     """Run warden on a single file. Returns scan-index entry."""
     try:
+        cmd = [
+            "warden", file_path,
+            "--json", "--log",
+            "--min-confidence", "off",
+            "--fail-on", "off",
+            "--quiet",
+            "--output", log_file,
+        ]
+        if skill:
+            cmd.extend(["--skill", skill])
         result = subprocess.run(
-            [
-                "warden", file_path,
-                "--json", "--log",
-                "--min-confidence", "off",
-                "--fail-on", "off",
-                "--quiet",
-                "--output", log_file,
-            ],
+            cmd,
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -337,9 +340,9 @@ def scan_file(
                     record = json.loads(line)
                     if record.get("type") == "summary":
                         continue
-                    skill = record.get("skill", "")
-                    if skill:
-                        skills.add(skill)
+                    record_skill = record.get("skill", "")
+                    if record_skill:
+                        skills.add(record_skill)
                     findings = record.get("findings", [])
                     finding_count += len(findings)
                 except json.JSONDecodeError:
@@ -469,6 +472,10 @@ def main() -> None:
         "--sweep-dir",
         help="Resume into an existing sweep directory",
     )
+    parser.add_argument(
+        "--skill",
+        help="Run only this skill (passed through to warden --skill)",
+    )
     args = parser.parse_args()
 
     # Check dependencies
@@ -535,7 +542,7 @@ def main() -> None:
 
     def _scan_and_record(file_path: str) -> dict[str, Any]:
         log_file = log_path_for_file(sweep_dir, file_path)
-        entry = scan_file(file_path, log_file)
+        entry = scan_file(file_path, log_file, skill=args.skill)
 
         with index_lock:
             with open(scan_index_path, "a") as f:
