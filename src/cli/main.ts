@@ -311,20 +311,27 @@ async function runSkills(
     reporter.debug('No API key found. Using Claude Code subscription auth.');
   }
 
-  // Pre-flight: verify auth will work before starting analysis
-  try {
-    verifyAuth({ apiKey });
-  } catch (error: unknown) {
-    reporter.error((error as WardenAuthenticationError).message);
-    return 1;
-  }
-
   // Try to find repo root for config loading
   let repoPath: string | undefined;
   try {
     repoPath = getRepoRoot(cwd);
   } catch {
     // Not in a git repo - that's fine for file mode
+  }
+
+  // Pre-flight: verify auth will work before starting analysis
+  try {
+    verifyAuth({ apiKey });
+  } catch (error: unknown) {
+    reporter.error((error as WardenAuthenticationError).message);
+    const effectiveRepo = repoPath ?? cwd;
+    if (options.json) {
+      const { content } = writeEmptyRunLog(effectiveRepo, { traceId: getTraceId(), outputPath: options.output });
+      process.stdout.write(content);
+    } else {
+      writeEmptyRunLog(effectiveRepo, { traceId: getTraceId(), outputPath: options.output });
+    }
+    return 1;
   }
 
   // Resolve config path
@@ -676,6 +683,12 @@ async function runConfigMode(options: CLIOptions, reporter: Reporter): Promise<n
     verifyAuth({ apiKey });
   } catch (error: unknown) {
     reporter.error((error as WardenAuthenticationError).message);
+    if (options.json) {
+      const { content } = writeEmptyRunLog(repoPath, { traceId: getTraceId(), outputPath: options.output });
+      process.stdout.write(content);
+    } else {
+      writeEmptyRunLog(repoPath, { traceId: getTraceId(), outputPath: options.output });
+    }
     return 1;
   }
 
