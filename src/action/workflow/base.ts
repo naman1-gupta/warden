@@ -4,11 +4,13 @@
  * Shared infrastructure for PR and schedule workflows.
  */
 
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { Octokit } from '@octokit/rest';
 import { execFileNonInteractive } from '../../utils/exec.js';
-import type { SkillReport } from '../../types/index.js';
+import type { EventContext, SkillReport } from '../../types/index.js';
 import { countSeverity } from '../../triggers/matcher.js';
 import type { TriggerResult } from '../triggers/executor.js';
 
@@ -239,4 +241,84 @@ export async function getDefaultBranchFromAPI(
 ): Promise<string> {
   const { data } = await octokit.repos.get({ owner, repo });
   return data.default_branch;
+}
+
+// -----------------------------------------------------------------------------
+// Findings Output File
+// -----------------------------------------------------------------------------
+
+/**
+ * Get the path for the findings output file.
+ * Uses RUNNER_TEMP (GitHub Actions) with fallback to OS temp dir.
+ */
+export function getFindingsOutputPath(): string {
+  const tmpDir = process.env['RUNNER_TEMP'] ?? tmpdir();
+  return join(tmpDir, 'warden-findings.json');
+}
+
+/**
+ * Write structured findings data to a JSON file for external export (GCS, S3, etc.).
+ *
+ * Always writes to a known location under RUNNER_TEMP and sets the `findings-file`
+ * output so downstream steps can reference the path.
+ */
+export function writeFindingsOutput(
+  reports: SkillReport[],
+  context: EventContext
+): string {
+  const filePath = getFindingsOutputPath();
+  const allFindings = reports.flatMap((r) => r.findings);
+
+  const output = {
+    version: '1',
+    timestamp: new Date().toISOString(),
+    repository: {
+      owner: context.repository.owner,
+      name: context.repository.name,
+      fullName: context.repository.fullName,
+    },
+    event: context.eventType,
+    ...(context.pullRequest && {
+      pullRequest: {
+        number: context.pullRequest.number,
+        author: context.pullRequest.author,
+        title: context.pullRequest.title,
+        baseBranch: context.pullRequest.baseBranch,
+        headBranch: context.pullRequest.headBranch,
+        headSha: context.pullRequest.headSha,
+      },
+    }),
+    runId: process.env['GITHUB_RUN_ID'] ?? '',
+    summary: {
+      totalFindings: allFindings.length,
+      findingsBySeverity: {
+        high: allFindings.filter((f) => f.severity === 'high').length,
+        medium: allFindings.filter((f) => f.severity === 'medium').length,
+        low: allFindings.filter((f) => f.severity === 'low').length,
+      },
+      totalSkills: reports.length,
+    },
+    skills: reports.map((r) => ({
+      name: r.skill,
+      summary: r.summary,
+      model: r.model,
+      durationMs: r.durationMs,
+      usage: r.usage,
+      findings: r.findings.map((f) => ({
+        id: f.id,
+        severity: f.severity,
+        confidence: f.confidence,
+        title: f.title,
+        description: f.description,
+        location: f.location,
+        additionalLocations: f.additionalLocations,
+        suggestedFix: f.suggestedFix,
+      })),
+    })),
+  };
+
+  mkdirSync(dirname(filePath), { recursive: true });
+  writeFileSync(filePath, JSON.stringify(output, null, 2));
+  setOutput('findings-file', filePath);
+  return filePath;
 }

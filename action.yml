@@ -53,6 +53,9 @@ outputs:
   summary:
     description: 'Summary of the analysis'
     value: ${{ steps.warden.outputs.summary }}
+  findings-file:
+    description: 'Path to structured JSON findings file (always written, use for upload to GCS/S3/etc.)'
+    value: ${{ steps.warden.outputs.findings-file }}
 
 runs:
   using: 'composite'

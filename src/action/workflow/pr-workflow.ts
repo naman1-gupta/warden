@@ -47,6 +47,7 @@ import {
   computeWorkflowOutputs,
   setWorkflowOutputs,
   getAuthenticatedBotLogin,
+  writeFindingsOutput,
 } from './base.js';
 
 // -----------------------------------------------------------------------------
@@ -539,6 +540,14 @@ async function finalizeWorkflow(
   const outputs = computeWorkflowOutputs(reports);
   setWorkflowOutputs(outputs);
 
+  // Write structured findings to file for external export (GCS, S3, etc.)
+  try {
+    const findingsPath = writeFindingsOutput(reports, context);
+    logAction(`Findings written to ${findingsPath}`);
+  } catch (error) {
+    warnAction(`Failed to write findings output: ${error}`);
+  }
+
   // Update core check with overall summary
   if (coreCheckId && context.pullRequest) {
     try {
@@ -678,6 +687,7 @@ export async function runPRWorkflow(
         setOutput('findings-count', 0);
         setOutput('high-count', 0);
         setOutput('summary', 'No triggers matched');
+        try { writeFindingsOutput([], context); } catch { /* non-fatal */ }
         return;
       }
 

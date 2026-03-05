@@ -25,6 +25,7 @@ import {
   findClaudeCodeExecutable,
   handleTriggerErrors,
   getDefaultBranchFromAPI,
+  writeFindingsOutput,
 } from './base.js';
 
 // -----------------------------------------------------------------------------
@@ -50,6 +51,16 @@ export async function runScheduleWorkflow(
     setOutput('findings-count', 0);
     setOutput('high-count', 0);
     setOutput('summary', 'No schedule triggers configured');
+    try {
+      const fullName = process.env['GITHUB_REPOSITORY'] ?? '';
+      const [o = '', n = ''] = fullName.split('/');
+      writeFindingsOutput([], {
+        eventType: 'schedule',
+        action: 'scheduled',
+        repository: { owner: o, name: n, fullName, defaultBranch: '' },
+        repoPath,
+      });
+    } catch { /* non-fatal */ }
     return;
   }
 
@@ -187,6 +198,19 @@ export async function runScheduleWorkflow(
   setOutput('findings-count', totalFindings);
   setOutput('high-count', highCount);
   setOutput('summary', allReports.map((r) => r.summary).join('\n') || 'Scheduled analysis complete');
+
+  // Write structured findings to file for external export (GCS, S3, etc.)
+  try {
+    const findingsPath = writeFindingsOutput(allReports, {
+      eventType: 'schedule',
+      action: 'scheduled',
+      repository: { owner, name: repo, fullName: `${owner}/${repo}`, defaultBranch },
+      repoPath,
+    });
+    console.log(`Findings written to ${findingsPath}`);
+  } catch (error) {
+    console.error(`::warning::Failed to write findings output: ${error}`);
+  }
 
   if (shouldFailAction) {
     setFailed(failureReasons.join('; '));
